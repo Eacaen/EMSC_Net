@@ -887,18 +887,24 @@ if __name__ == '__main__':
     # 设置TensorFlow的默认数据类型为float32
     tf.keras.backend.set_floatx('float32')
     data_dir = "/mnt/data/msc_models/"
-    # 设置模型保存路径
-    save_model_path = os.path.join(data_dir, 'msc_models')
-    
+    if os.path.exists(data_dir):
+        # 设置模型保存路径
+        save_model_path = data_dir
+    else:
+        data_dir = '/Users/tianyunhu/Documents/temp/code/Test_app/EMSC_Model'
+        save_model_path = os.path.join(data_dir, 'msc_models')
+
     print(f"save_model_path: {save_model_path}")
 
     model_name = 'msc_model'  # SavedModel格式不需要文件扩展名
     best_model_name = 'best_msc_model'
     dataset_path = os.path.join(data_dir, 'dataset.npz')
+
+
     
     # 设置训练参数
     resume_training = True  # 设置为True以恢复训练，False从头开始
-    epochs = 200  # 总的训练epochs数（包括之前已训练的）
+    epochs = 500  # 总的训练epochs数（包括之前已训练的）
     batch_size = 8
     save_frequency = 1  # 每5个epoch保存一次
     
@@ -912,7 +918,13 @@ if __name__ == '__main__':
     save_training_config(training_config, save_model_path)
     
     # 尝试从npz文件加载数据集，如果不存在则重新处理数据
-    X_paths, Y_paths = load_dataset_from_npz(dataset_path)
+    if os.path.exists(dataset_path):
+        X_paths, Y_paths = load_dataset_from_npz(dataset_path)
+    else:
+        dataset_path = '/Users/tianyunhu/Documents/temp/code/Test_app/EMSC_Model/msc_models/dataset.npz'
+        X_paths, Y_paths = load_dataset_from_npz(dataset_path)
+        
+    
     
     # 数据标准化
     x_scaler = MinMaxScaler()
