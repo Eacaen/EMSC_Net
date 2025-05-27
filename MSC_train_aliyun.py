@@ -787,7 +787,7 @@ def save_training_config(config, save_path):
     """保存训练配置"""
     try:
         import json
-        config_file = os.path.join(save_path, 'training_config.json')
+        config_file = './training_config.json'
         with open(config_file, 'w') as f:
             json.dump(config, f, indent=4)
         print(f"Training configuration saved to: {config_file}")
@@ -798,7 +798,7 @@ def load_training_config(save_path):
     """加载训练配置"""
     try:
         import json
-        config_file = os.path.join(save_path, 'training_config.json')
+        config_file = './training_config.json'
         if os.path.exists(config_file):
             with open(config_file, 'r') as f:
                 config = json.load(f)
@@ -886,14 +886,14 @@ def load_dataset_from_npz(npz_path='./msc_models/dataset.npz'):
 if __name__ == '__main__':
     # 设置TensorFlow的默认数据类型为float32
     tf.keras.backend.set_floatx('float32')
-    
+    data_dir = "/mnt/data/msc_models/"
     # 设置模型保存路径
-    save_model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'msc_models')
+    save_model_path = os.path.join(data_dir, 'msc_models')
+    
     print(f"save_model_path: {save_model_path}")
 
     model_name = 'msc_model'  # SavedModel格式不需要文件扩展名
     best_model_name = 'best_msc_model'
-    data_dir = "/mnt/data/msc_models/"
     dataset_path = os.path.join(data_dir, 'dataset.npz')
     
     # 设置训练参数
