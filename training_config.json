@@ -1,0 +1,15 @@
+{
+    "STATE_DIM": 5,
+    "INPUT_DIM": 3,
+    "HIDDEN_DIM": 32,
+    "LEARNING_RATE": 0.001,
+    "TARGET_SEQUENCE_LENGTH": 200,
+    "WINDOW_SIZE": 200,
+    "STRIDE": 20,
+    "MAX_SUBSEQUENCES": 200,
+    "train_test_split_ratio": 0.8,
+    "random_seed": 42,
+    "epochs": 10,
+    "batch_size": 8,
+    "save_frequency": 1
+}

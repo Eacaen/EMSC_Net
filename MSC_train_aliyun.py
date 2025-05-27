@@ -893,7 +893,7 @@ if __name__ == '__main__':
 
     model_name = 'msc_model'  # SavedModel格式不需要文件扩展名
     best_model_name = 'best_msc_model'
-    data_dir = "/mnt/data/"
+    data_dir = "/mnt/data/msc_models/"
     dataset_path = os.path.join(data_dir, 'dataset.npz')
     
     # 设置训练参数
@@ -913,7 +913,8 @@ if __name__ == '__main__':
     
     # 尝试从npz文件加载数据集，如果不存在则重新处理数据
     X_paths, Y_paths = load_dataset_from_npz(dataset_path)
-        # 数据标准化
+    
+    # 数据标准化
     x_scaler = MinMaxScaler()
     y_scaler = MinMaxScaler()
     
