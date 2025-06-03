@@ -336,8 +336,8 @@ def plot_results(strain_sequence, predicted_stress, time_sequence, temperature,
 
 if __name__ == '__main__':
     # 1. 加载模型和标准化器
-    model_dir = '/Users/tianyunhu/Documents/temp/code/Test_app/msc_models/best_msc_model'  # 移除.h5扩展名
-    scaler_dir = '/Users/tianyunhu/Documents/temp/code/Test_app/msc_models/scalers/'
+    model_dir = '/Users/tianyunhu/Documents/temp/code/Test_app/EMSC_Model/msc_models/best_msc_model'  # 移除.h5扩展名
+    scaler_dir = '/Users/tianyunhu/Documents/temp/code/Test_app/EMSC_Model/msc_models/scalers'
     x_scaler_path = os.path.join(scaler_dir, 'x_scaler.save')
     y_scaler_path = os.path.join(scaler_dir, 'y_scaler.save')
     

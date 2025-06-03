@@ -42,7 +42,7 @@ HIDDEN_DIM = 32
 # 这个参数控制模型参数更新的步长，影响训练速度和稳定性
 LEARNING_RATE = 1e-3
 
-TARGET_SEQUENCE_LENGTH = 500  # 更新目标序列长度
+TARGET_SEQUENCE_LENGTH = 5000  # 更新目标序列长度
 
 # 添加滑动窗口参数
 WINDOW_SIZE = TARGET_SEQUENCE_LENGTH
@@ -218,23 +218,35 @@ class MSCProgressCallback(Callback):
     def _load_training_history(self):
         """加载已有的训练历史"""
         try:
-            history_file = os.path.join(self.save_path, 'training_history.xlsx')
-            if os.path.exists(history_file):
-                print(f"Loading existing training history from: {history_file}")
-                df = pd.read_excel(history_file)
-                history = {}
-                for column in df.columns:
-                    if column != 'epoch':
-                        history[column] = df[column].tolist()
-                print(f"Loaded history with {len(history.get('loss', []))} epochs")
-                return history
-            else:
-                print("No existing training history found, creating new record")
-                return {
-                    'loss': [],
-                    'val_loss': [],
-                    'epoch_times': []
-                }
+            # 尝试按优先级加载不同格式的历史文件
+            history_files = [
+                ('training_history.csv', pd.read_csv),
+                ('training_history.xlsx', pd.read_excel),
+                ('training_history.excel', pd.read_excel)
+            ]
+            
+            for filename, read_func in history_files:
+                history_file = os.path.join(self.save_path, filename)
+                if os.path.exists(history_file):
+                    print(f"Loading existing training history from: {history_file}")
+                    try:
+                        df = read_func(history_file)
+                        history = {}
+                        for column in df.columns:
+                            if column != 'epoch':
+                                history[column] = df[column].tolist()
+                        print(f"Loaded history with {len(history.get('loss', []))} epochs")
+                        return history
+                    except Exception as e:
+                        print(f"Failed to load {filename}: {e}")
+                        continue
+            
+            print("No existing training history found, creating new record")
+            return {
+                'loss': [],
+                'val_loss': [],
+                'epoch_times': []
+            }
         except Exception as e:
             print(f"Error loading training history: {str(e)}")
             return {
@@ -262,27 +274,31 @@ class MSCProgressCallback(Callback):
             # 创建DataFrame
             df = pd.DataFrame(data_dict)
             
-            # 尝试保存为不同的格式
+            # 尝试保存为不同的格式，优先保存CSV格式以确保一致性
             save_formats = [
-                ('csv', lambda p: df.to_csv(p, index=False)),
-                ('json', lambda p: df.to_json(p, orient='records', indent=4)),
-                ('excel', lambda p: df.to_excel(p, index=False))
+                ('csv', lambda p: df.to_csv(p, index=False, encoding='utf-8')),
+                ('xlsx', lambda p: df.to_excel(p, index=False)),
+                ('json', lambda p: df.to_json(p, orient='records', indent=4))
             ]
             
-            saved = False
+            saved_count = 0
             for format_name, save_func in save_formats:
                 try:
                     save_path = os.path.join(self.save_path, f'training_history.{format_name}')
                     save_func(save_path)
                     print(f"Training history saved to: {save_path}")
-                    saved = True
-                    break
+                    saved_count += 1
+                    # 只要CSV保存成功就继续保存其他格式作为备份
+                    if format_name == 'csv':
+                        continue
                 except Exception as e:
                     print(f"Failed to save as {format_name}: {e}")
                     continue
             
-            if not saved:
+            if saved_count == 0:
                 print("Warning: Failed to save training history in any format")
+            else:
+                print(f"Training history saved in {saved_count} format(s)")
             
         except Exception as e:
             print(f"Error saving training history: {e}")
@@ -752,11 +768,24 @@ def resume_training_from_checkpoint(model_path='./msc_models/', model_name='msc_
     # 尝试加载训练历史以确定epoch偏移
     epoch_offset = 0
     try:
-        history_file = os.path.join(model_path, 'training_history.xlsx')
-        if os.path.exists(history_file):
-            df = pd.read_excel(history_file)
-            epoch_offset = len(df)
-            print(f"从训练历史中检测到已完成 {epoch_offset} 个epochs")
+        # 尝试按优先级加载不同格式的历史文件
+        history_files = [
+            ('training_history.csv', pd.read_csv),
+            ('training_history.xlsx', pd.read_excel),
+            ('training_history.excel', pd.read_excel)
+        ]
+        
+        for filename, read_func in history_files:
+            history_file = os.path.join(model_path, filename)
+            if os.path.exists(history_file):
+                try:
+                    df = read_func(history_file)
+                    epoch_offset = len(df)
+                    print(f"从训练历史中检测到已完成 {epoch_offset} 个epochs (来源: {filename})")
+                    break
+                except Exception as e:
+                    print(f"读取 {filename} 时出错: {e}")
+                    continue
         else:
             print("未找到训练历史文件，从epoch 0开始")
     except Exception as e:
@@ -1083,7 +1112,7 @@ if __name__ == '__main__':
         print(f"模型保存路径: {save_model_path}")
         print(f"最佳模型: {os.path.join(save_model_path, best_model_name)}")
         print(f"当前模型: {os.path.join(save_model_path, model_name)}")
-        print(f"训练历史: {os.path.join(save_model_path, 'training_history.xlsx')}")
+        print(f"训练历史: {os.path.join(save_model_path, 'training_history.csv')}")
         print(f"训练图表: {os.path.join(save_model_path, 'training_history.png')}")
         print(f"训练配置: {os.path.join(save_model_path, 'training_config.json')}")
         print("="*60)
