@@ -120,72 +120,6 @@ def build_msc_model_with_mask(state_dim=STATE_DIM, input_dim=INPUT_DIM, output_d
     
     return Model(inputs=[delta_input, init_state, mask], outputs=stress_out)
 
-def extract_temperature_from_filename(filename):
-    temperature = filename.split('_')[3]
-    print(temperature)
-    return float(temperature)
-
-def load_and_preprocess_data(file_list):
-    """
-    改进的数据加载和预处理函数，对长序列使用滑动窗口
-    """
-    paths = []
-    targets = []
-    sequence_lengths = []
-    
-    for file_idx, file in enumerate(file_list):
-        df = pd.read_excel(file)
-        df = df.rename(columns=lambda x: x.strip())
-        if not {'Time', 'True_Strain', 'True_Stress'}.issubset(df.columns):
-            print(f"文件 {file} 缺少必要列，已跳过")
-            continue
-
-        True_Strain = df['True_Strain']
-        True_Stress = df['True_Stress']
-
-        if 'com' in file:
-            print(f"file'{file}'检测到压缩数据文件，已将应力和应变取反")
-            True_Strain = -True_Strain
-            True_Stress = -True_Stress
-
-        T = extract_temperature_from_filename(file)
-        df['Δε'] = True_Strain.diff().fillna(0)
-        df['Δt'] = df['Time'].diff().fillna(1e-5)
-        df['T'] = T
-        
-        x_full = df[['Δε', 'Δt', 'T']].values
-        y_full = True_Stress.values.reshape(-1, 1)
-        
-        full_len = len(x_full)
-        sequence_lengths.append(full_len)
-        
-        if full_len > WINDOW_SIZE:
-            # 应用滑动窗口
-            num_subsequences = 0
-            for i in range(0, full_len - WINDOW_SIZE + 1, STRIDE):
-                if num_subsequences >= MAX_SUBSEQUENCES:
-                    break
-                
-                x_sub = x_full[i : i + WINDOW_SIZE]
-                y_sub = y_full[i : i + WINDOW_SIZE]
-                
-                paths.append(x_sub)
-                targets.append(y_sub)
-                num_subsequences += 1
-            print(f"文件 {file} (长度 {full_len}) 分割为 {num_subsequences} 个子序列")
-        else:
-            # 短序列直接添加
-            paths.append(x_full)
-            targets.append(y_full)
-            
-    # 序列长度统计（基于原始文件）
-    print(f"序列长度统计 (原始文件):")
-    print(f"最短: {min(sequence_lengths)}")
-    print(f"最长: {max(sequence_lengths)}")
-    print(f"平均: {np.mean(sequence_lengths):.2f}")
-    print(f"中位数: {np.median(sequence_lengths)}")
-    
-    return paths, targets
 
 class MSCProgressCallback(Callback):
     """
@@ -562,122 +496,6 @@ def load_or_create_model_with_history(model_path='./msc_models/', model_name='ms
     model = build_msc_model_with_mask(state_dim=state_dim, input_dim=input_dim, output_dim=output_dim)
     return model, True
 
-def shuffle_sequences(X_seq, Y_seq, init_state_seq, random_state=42):
-    """
-    随机打乱训练序列
-    
-    参数:
-    X_seq: 输入序列
-    Y_seq: 目标序列
-    init_state_seq: 初始状态序列
-    random_state: 随机种子
-    
-    返回:
-    打乱后的序列
-    """
-    # 设置随机种子
-    np.random.seed(random_state)
-    
-    # 生成随机索引
-    indices = np.random.permutation(len(X_seq))
-    
-    # 打乱所有序列
-    X_shuffled = X_seq[indices]
-    Y_shuffled = Y_seq[indices]
-    init_state_shuffled = init_state_seq[indices]
-    
-    return X_shuffled, Y_shuffled, init_state_shuffled
-
-def group_sequences_by_length(file_list):
-    # 按序列长度分组
-    length_groups = {}
-    for file in file_list:
-        df = pd.read_excel(file)
-        length = len(df)
-        if length not in length_groups:
-            length_groups[length] = []
-        length_groups[length].append(file)
-    
-    # 对每组使用合适的序列长度
-    all_X = []
-    all_Y = []
-    for length, files in length_groups.items():
-        if length <= TARGET_SEQUENCE_LENGTH:
-            X, Y = process_group(files, length)
-            all_X.append(X)
-            all_Y.append(Y)
-    
-    return np.concatenate(all_X), np.concatenate(all_Y)
-
-def augment_short_sequences(x, y, target_length):
-    """对短序列进行数据增强"""
-    if len(x) >= target_length:
-        return x, y
-    
-    # 使用插值方法生成更多数据点
-    t = np.linspace(0, 1, len(x))
-    t_new = np.linspace(0, 1, target_length)
-    
-    x_aug = np.array([interp1d(t, x[:, i])(t_new) for i in range(x.shape[1])]).T
-    y_aug = interp1d(t, y.flatten())(t_new).reshape(-1, 1)
-    
-    return x_aug, y_aug
-
-def analyze_sequence_lengths(file_list):
-    lengths = []
-    for file in file_list:
-        df = pd.read_excel(file)
-        lengths.append(len(df))
-    
-    print(f"序列长度统计:")
-    print(f"最短: {min(lengths)}")
-    print(f"最长: {max(lengths)}")
-    print(f"平均: {np.mean(lengths):.2f}")
-    print(f"中位数: {np.median(lengths)}")
-    
-    # 绘制长度分布直方图
-    plt.hist(lengths, bins=20)
-    plt.title("序列长度分布")
-    plt.xlabel("长度")
-    plt.ylabel("数量")
-    plt.show()
-
-def prepare_sequences(X_paths, Y_paths, x_scaler, y_scaler):
-    """
-    准备训练序列，处理滑动窗口生成的子序列
-    """
-    X_norm = [x_scaler.transform(x) for x in X_paths]
-    Y_norm = [y_scaler.transform(y) for y in Y_paths]
-    
-    # 所有序列都应填充到 WINDOW_SIZE
-    max_len = WINDOW_SIZE
-    
-    print(f"使用统一序列长度 (填充/截断至): {max_len}")
-    
-    # 准备序列和掩码
-    X_seq = []
-    Y_seq = []
-    masks = []
-    
-    for x, y in zip(X_norm, Y_norm):
-        seq_len = len(x)
-        
-        # 生成掩码（1表示有效数据，0表示填充）
-        mask = np.ones(min(seq_len, max_len), dtype=np.float32)
-        
-        # 填充或截断序列
-        x_padded = np.pad(x[:max_len], ((0, max(0, max_len - seq_len)), (0, 0)), 
-                         mode='constant', constant_values=0)
-        y_padded = np.pad(y[:max_len], ((0, max(0, max_len - seq_len)), (0, 0)), 
-                         mode='constant', constant_values=0)
-        mask_padded = np.pad(mask, (0, max(0, max_len - len(mask))), 
-                           mode='constant', constant_values=0)
-        
-        X_seq.append(x_padded)
-        Y_seq.append(y_padded)
-        masks.append(mask_padded)
-    
-    return np.array(X_seq, dtype=np.float32), np.array(Y_seq, dtype=np.float32), np.array(masks, dtype=np.float32)
 
 class MaskedMSELoss(tf.keras.losses.Loss):
     """
@@ -929,8 +747,6 @@ if __name__ == '__main__':
     best_model_name = 'best_msc_model'
     dataset_path = os.path.join(data_dir, 'dataset.npz')
 
-
-    
     # 设置训练参数
     resume_training = True  # 设置为True以恢复训练，False从头开始
     epochs = 500  # 总的训练epochs数（包括之前已训练的）
@@ -947,38 +763,64 @@ if __name__ == '__main__':
     save_training_config(training_config, save_model_path)
     
     # 尝试从npz文件加载数据集，如果不存在则重新处理数据
-    if os.path.exists(dataset_path):
-        X_paths, Y_paths = load_dataset_from_npz(dataset_path)
-    else:
-        dataset_path = '/Users/tianyunhu/Documents/temp/code/Test_app/EMSC_Model/msc_models/dataset.npz'
-        X_paths, Y_paths = load_dataset_from_npz(dataset_path)
-        
+    dataset_path = '/Users/tianyunhu/Documents/temp/code/Test_app/EMSC_Model/msc_models/dataset.npz'
+    X_paths, Y_paths = load_dataset_from_npz(dataset_path)
+    if X_paths is None or Y_paths is None:
+        raise ValueError("无法加载数据集，请确保数据集已正确生成")
     
-    
-    # 数据标准化
-    x_scaler = MinMaxScaler()
-    y_scaler = MinMaxScaler()
-    
-    # 加载已有的标准化器（如果存在）
+    # 加载标准化器
     scaler_path = os.path.join(save_model_path, 'scalers')
     x_scaler_file = os.path.join(scaler_path, 'x_scaler.save')
     y_scaler_file = os.path.join(scaler_path, 'y_scaler.save')
     
-    if os.path.exists(x_scaler_file) and os.path.exists(y_scaler_file):
-        print("Loading existing scalers...")
-        x_scaler = joblib.load(x_scaler_file)
-        y_scaler = joblib.load(y_scaler_file)
-        print("Scalers loaded successfully")
-    else:
-        print("Creating new scalers...")
-    # 注意：标准化器应在所有（包括子序列）数据上拟合
-    x_scaler.fit(np.vstack(X_paths))
-    y_scaler.fit(np.vstack(Y_paths))
-    print("New scalers created")
+    if not (os.path.exists(x_scaler_file) and os.path.exists(y_scaler_file)):
+        raise ValueError("找不到标准化器文件，请确保数据集已正确生成并包含标准化器")
+    
+    print("加载标准化器...")
+    x_scaler = joblib.load(x_scaler_file)
+    y_scaler = joblib.load(y_scaler_file)
+    print("标准化器加载成功")
+    
+    # 使用标准化器转换数据
+    print("标准化数据...")
+    x_scaled = [x_scaler.transform(x) for x in X_paths]
+    y_scaled = [y_scaler.transform(y) for y in Y_paths]
+    print("数据标准化完成")
 
     # 准备序列和掩码
-    X_seq, Y_seq, masks = prepare_sequences(X_paths, Y_paths, x_scaler, y_scaler)
-    init_state_seq = np.zeros((len(X_seq), STATE_DIM), dtype=np.float32)
+    print("准备训练序列...")
+    X_seq = []
+    Y_seq = []
+    masks = []
+    init_states = []  # 新增：存储初始状态
+    
+    for x, y in zip(x_scaled, y_scaled):
+        seq_len = len(x)
+        mask = np.ones(min(seq_len, WINDOW_SIZE), dtype=np.float32)
+        
+        x_padded = np.pad(x[:WINDOW_SIZE], 
+                        ((0, max(0, WINDOW_SIZE - seq_len)), (0, 0)), 
+                        mode='constant', constant_values=0)
+        y_padded = np.pad(y[:WINDOW_SIZE], 
+                        ((0, max(0, WINDOW_SIZE - seq_len)), (0, 0)), 
+                        mode='constant', constant_values=0)
+        mask_padded = np.pad(mask, 
+                           (0, max(0, WINDOW_SIZE - len(mask))), 
+                           mode='constant', constant_values=0)
+        
+        # 为每个序列创建一个STATE_DIM维度的初始状态向量
+        init_state = np.zeros(STATE_DIM, dtype=np.float32)  # 使用零向量作为初始状态
+        
+        X_seq.append(x_padded)
+        Y_seq.append(y_padded)
+        masks.append(mask_padded)
+        init_states.append(init_state)
+    
+    X_seq = np.array(X_seq, dtype=np.float32)
+    Y_seq = np.array(Y_seq, dtype=np.float32)
+    masks = np.array(masks, dtype=np.float32)
+    init_states = np.array(init_states, dtype=np.float32)  # 转换为numpy数组
+    print("训练序列准备完成")
 
     # 随机打乱序列
     print("随机打乱训练序列...")
@@ -987,19 +829,19 @@ if __name__ == '__main__':
     X_seq = X_seq[indices]
     Y_seq = Y_seq[indices]
     masks = masks[indices]
-    init_state_seq = init_state_seq[indices]
+    init_states = init_states[indices]  # 同时打乱初始状态
 
     # 划分训练集和验证集
     train_size = int(training_config['train_test_split_ratio'] * len(X_seq))
     X_train = X_seq[:train_size]
     Y_train = Y_seq[:train_size]
     mask_train = masks[:train_size]
-    init_state_train = init_state_seq[:train_size]
+    init_states_train = init_states[:train_size]  # 划分训练集的初始状态
     
     X_val = X_seq[train_size:]
     Y_val = Y_seq[train_size:]
     mask_val = masks[train_size:]
-    init_state_val = init_state_seq[train_size:]
+    init_states_val = init_states[train_size:]  # 划分验证集的初始状态
     
     # 决定是恢复训练还是从头开始
     epoch_offset = 0
@@ -1074,24 +916,24 @@ if __name__ == '__main__':
         
         # 使用 Keras fit 进行训练，包含自定义回调
         history = model.fit(
-        x={
-            'delta_input': X_train, 
-            'init_state': init_state_train,
-            'mask': mask_train
-        },
-        y=Y_train,
-        validation_data=(
-            {
-                'delta_input': X_val,
-                'init_state': init_state_val,
-                'mask': mask_val
+            x={
+                'delta_input': X_train, 
+                'init_state': init_states_train,  # 使用正确维度的初始状态
+                'mask': mask_train
             },
-            Y_val
-        ),
+            y=Y_train,
+            validation_data=(
+                {
+                    'delta_input': X_val,
+                    'init_state': init_states_val,  # 使用正确维度的初始状态
+                    'mask': mask_val
+                },
+                Y_val
+            ),
             batch_size=batch_size,
             epochs=epochs,
             initial_epoch=initial_epoch,  # 从指定的epoch开始
-        verbose=1,
+            verbose=1,
             shuffle=True,  # 每个epoch打乱训练数据
             callbacks=[progress_callback]  # 添加自定义回调
         )
