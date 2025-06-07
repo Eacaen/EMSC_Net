@@ -78,23 +78,19 @@ class EMSCDatasetGenerator:
         
         # 定义列名映射
         self.column_mapping = {
-            'Time': 'time',
-            'True_Strain': 'true_strain',
-            'True_Stress': 'true_stress',
+            'time': 'time',
+            'true_strain': 'true_strain',
+            'true_stress': 'true_stress',
+            'temperature': 'temperature',
             'delta_strain': 'delta_strain',  # 原 Δε
             'delta_time': 'delta_time',      # 原 Δt
-            'Temperature': 'temperature'     # 原 T
+            'delta_temperature': 'delta_temperature',  # 原 ΔT
+
+            'init_strain': 'init_strain',    # 初始应变
+            'init_time': 'init_time',        # 初始时间
+            'init_temp': 'init_temp'         # 初始温度
         }
         
-    def extract_temperature_from_filename(self, filename):
-        """从文件名中提取温度信息"""
-        try:
-            temperature = os.path.splitext(filename)[0].split('_')[3]
-            return float(temperature)
-        except (IndexError, ValueError) as e:
-            print(f"警告: 无法从文件名 {filename} 提取温度信息: {e}")
-            return None
-
     def extract_strain_rate_from_filename(self, filename):
         """从文件名中提取应变率信息"""
         try:
@@ -127,14 +123,16 @@ class EMSCDatasetGenerator:
                 df = df.rename(columns=lambda x: x.strip())
                 
                 # 验证必要的列是否存在
-                required_columns = {'time', 'true_strain', 'true_stress'}
+                required_columns = {'time', 'true_strain', 'true_stress', 'temperature'}
                 if not required_columns.issubset({col.lower() for col in df.columns}):
                     print(f"文件 {file} 缺少必要列，已跳过")
                     continue
 
                 # 提取数据
-                true_strain = df[self.column_mapping['True_Strain']]
-                true_stress = df[self.column_mapping['True_Stress']]
+                time = df[self.column_mapping['time']]
+                true_strain = df[self.column_mapping['true_strain']]
+                true_stress = df[self.column_mapping['true_stress']]
+                temperature = df[self.column_mapping['temperature']]
 
                 # 处理压缩数据
                 if 'com' in file:
@@ -143,13 +141,12 @@ class EMSCDatasetGenerator:
                     true_stress = -true_stress
 
                 # 提取温度和应变率信息
-                temperature = self.extract_temperature_from_filename(file)
                 strain_rate = self.extract_strain_rate_from_filename(file)
                 
                 if temperature is not None:
-                    if temperature not in self.temperature_stats:
-                        self.temperature_stats[temperature] = 0
-                    self.temperature_stats[temperature] += 1
+                    if temperature[0] not in self.temperature_stats:
+                        self.temperature_stats[temperature[0]] = 0
+                    self.temperature_stats[temperature[0]] += 1
                 
                 if strain_rate is not None:
                     if strain_rate not in self.strain_rate_stats:
@@ -158,16 +155,25 @@ class EMSCDatasetGenerator:
 
                 # 计算增量
                 df[self.column_mapping['delta_strain']] = true_strain.diff().fillna(0)
-                df[self.column_mapping['delta_time']] = df[self.column_mapping['Time']].diff().fillna(1e-5)
-                df[self.column_mapping['Temperature']] = temperature
+                df[self.column_mapping['delta_time']] = time.diff().fillna(1e-5)
+                df[self.column_mapping['delta_temperature']] = temperature.diff().fillna(0)
+                
+                # 获取初始值（只取第一个值）
+                init_strain = true_strain.iloc[0]
+                init_time = time.iloc[0]
+                init_temp = temperature.iloc[0]
                 
                 # 准备特征和目标
-                feature_columns = [
+                # 增量特征
+                delta_features = df[[
                     self.column_mapping['delta_strain'],
                     self.column_mapping['delta_time'],
-                    self.column_mapping['Temperature']
-                ]
-                x_full = df[feature_columns].values
+                    self.column_mapping['delta_temperature']
+                ]].values
+                
+                # 将初始值作为额外特征添加到每个时间步
+                init_features = np.array([init_strain, init_time, init_temp])
+                x_full = np.column_stack([delta_features, np.tile(init_features, (len(delta_features), 1))])
                 y_full = true_stress.values.reshape(-1, 1)
                 
                 full_len = len(x_full)
@@ -357,6 +363,66 @@ class EMSCDatasetGenerator:
         print("\n数据集统计信息:")
         print("="*50)
         print(f"序列数量: {len(self.X_paths)}")
+        
+        # 打印X_paths和Y_paths的维度信息
+        if self.X_paths:
+            print("\nX_paths前5个序列的前5个元素:")
+            for i, x_seq in enumerate(self.X_paths[:5]):
+                print(f"序列 {i+1}:")
+                print(x_seq[:5])
+            
+            print("\nY_paths前5个序列的前5个元素:")
+            for i, y_seq in enumerate(self.Y_paths[:5]):
+                print(f"序列 {i+1}:")
+                print(y_seq[:5])
+            x_shapes = [x.shape for x in self.X_paths]
+            y_shapes = [y.shape for y in self.Y_paths]
+            
+            print("\nX_paths维度统计:")
+            print(f"样本数量: {len(x_shapes)}")
+            print(f"形状分布:")
+            shape_counts = {}
+            for shape in x_shapes:
+                shape_str = str(shape)
+                if shape_str not in shape_counts:
+                    shape_counts[shape_str] = 0
+                shape_counts[shape_str] += 1
+            for shape_str, count in sorted(shape_counts.items()):
+                print(f"  {shape_str}: {count}个样本")
+            
+            print("\nY_paths维度统计:")
+            print(f"样本数量: {len(y_shapes)}")
+            print(f"形状分布:")
+            shape_counts = {}
+            for shape in y_shapes:
+                shape_str = str(shape)
+                if shape_str not in shape_counts:
+                    shape_counts[shape_str] = 0
+                shape_counts[shape_str] += 1
+            for shape_str, count in sorted(shape_counts.items()):
+                print(f"  {shape_str}: {count}个样本")
+            
+            # 打印特征维度信息
+            if x_shapes:
+                print(f"\n特征维度: {x_shapes[0][1]}")
+                print("特征列表:")
+                print("动态特征（每个时间步）:")
+                delta_features = [
+                    self.column_mapping['delta_strain'],
+                    self.column_mapping['delta_time'],
+                    self.column_mapping['delta_temperature']
+                ]
+                for i, col in enumerate(delta_features):
+                    print(f"  {i+1}. {col}")
+                print("\n静态特征（序列初始值）:")
+                init_features = [
+                    self.column_mapping['init_strain'],
+                    self.column_mapping['init_time'],
+                    self.column_mapping['init_temp']
+                ]
+                for i, col in enumerate(init_features):
+                    print(f"  {i+4}. {col}")
+        
         print("\n序列长度统计:")
         print(f"最短: {min(self.sequence_lengths)}")
         print(f"最长: {max(self.sequence_lengths)}")

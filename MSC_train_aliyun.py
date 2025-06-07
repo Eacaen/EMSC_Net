@@ -1,4 +1,19 @@
 # Minimal State Cell (MSC) training pipeline with multi-temperature, multi-rate experimental data
+# 输入: [delta_strain, delta_time, temperature]
+#     ↓
+# 1. 方向向量计算: d_n = delta_strain / |delta_strain|
+#     ↓
+# 2. 内部层处理: l = tanh(W_a·l + b_a) * tanh(W_b·l + b_b)
+#     ↓
+# 3. 门控参数: α,β,γ = exp(W·l_d + b)
+#     ↓
+# 4. 候选状态: c_n = tanh(W_c·l_d + b_c)
+#     ↓
+# 5. 更新门: z = 1 - exp(-α|Δε| - βΔt - γ|T|)
+#     ↓
+# 6. 状态更新: h_n = (1-z)h_prev + z·c_n
+#     ↓
+# 7. 输出: σ_n = W_out·h_n (True_Stress)
 
 import os
 import re
@@ -26,12 +41,12 @@ print(tf.__version__)
 # 状态维度：定义MSC单元内部状态向量的维度
 # 这个参数决定了模型内部状态的复杂度，影响模型捕捉材料行为的能力
 # 较大的值可以表示更复杂的材料状态，但会增加模型参数量和训练难度
-STATE_DIM = 5
+STATE_DIM = 8
 
 # 输入维度：定义模型输入特征的维度
-# 对于材料本构模型，通常包括应变增量、应变率、温度等物理量
+# 对于材料本构模型，通常包括应变增量、时间增量、温度增量等物理量
 # 这个参数需要与实验数据的特征数量相匹配
-INPUT_DIM = 3
+INPUT_DIM = 6  # [delta_strain, delta_time, delta_temperature, init_strain, init_time, init_temp]
 
 # 隐藏层维度：定义神经网络隐藏层的神经元数量
 # 这个参数影响模型的表达能力和复杂度
@@ -44,81 +59,242 @@ LEARNING_RATE = 1e-3
 
 TARGET_SEQUENCE_LENGTH = 5000  # 更新目标序列长度
 
-# 添加滑动窗口参数
-WINDOW_SIZE = TARGET_SEQUENCE_LENGTH
-# 滑动窗口步长：定义生成子序列时的滑动步长
-# 这个参数控制相邻子序列之间的重叠程度，影响训练数据的多样性和数量
-# 较小的步长会产生更多重叠的子序列，增加训练数据量，但可能导致数据冗余
-# 较大的步长会减少重叠，降低数据冗余，但可能减少训练样本数量
-STRIDE = TARGET_SEQUENCE_LENGTH // 10  # 设置为目标序列长度的一半，平衡数据量和多样性
-MAX_SUBSEQUENCES = 200  # 每条长路径最多截取的子序列数
 
 class MSC_Cell(tf.keras.layers.Layer):
-    def __init__(self, state_dim=5, hidden_dim=32):
+    """
+    增强型最小状态单元 (EMSC) 实现
+    
+    参数:
+    state_dim: 状态向量维度 (h)
+    input_dim: 输入特征维度 [delta_strain, delta_time, delta_temperature, init_strain, init_time, init_temp]
+    hidden_dim: 内部层维度 (l)
+    num_internal_layers: 内部层数量
+    """
+    def __init__(self, state_dim=5, input_dim=3, hidden_dim=32, num_internal_layers=2):
         super().__init__()
-        self.fc1 = Dense(hidden_dim, activation='tanh')
-        self.fc2 = Dense(hidden_dim, activation='tanh')
-        self.out = Dense(state_dim, activation='linear')
+        self.state_dim = state_dim
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        
+        # 1. 内部层 (tanh∘tanh 逐层)
+        self.internal_layers = []
+        for i in range(num_internal_layers):
+            # 每层包含两个 Dense 层 (W_a, W_b)
+            self.internal_layers.append([
+                Dense(hidden_dim, activation='tanh', use_bias=True, name=f'W_a_{i}'),
+                Dense(hidden_dim, activation='tanh', use_bias=True, name=f'W_b_{i}')
+            ])
+        
+        # 2. 门控参数 (alpha, beta, gamma)
+        self.W_alpha = Dense(1, use_bias=True, name='W_alpha')
+        self.W_beta = Dense(1, use_bias=True, name='W_beta')
+        self.W_gamma = Dense(1, use_bias=True, name='W_gamma')
+        
+        # 3. 候选状态
+        self.W_c = Dense(state_dim, use_bias=True, name='W_c')
+        
+        # 4. 输出层 (True_Stress)
+        self.W_out = Dense(1, use_bias=False, name='W_out')
+    
+    def calc_direction_vec(self, delta_features):
+        """
+        计算增量方向向量
+        
+        参数:
+        delta_features: [delta_strain, delta_time, delta_temperature] (batch, 3)
+        
+        返回:
+        direction: 归一化的方向向量 (batch, 3)
+        """
+        delta_norm = tf.sqrt(tf.reduce_sum(tf.square(delta_features), axis=-1, keepdims=True))
+        delta_norm = tf.maximum(delta_norm, 1e-7)  # 避免除零
+        direction = delta_features / delta_norm
+        return direction
+    
+    def process_internal_layers(self, l_0):
+        """
+        处理内部层 (tanh∘tanh 逐层)
+        
+        参数:
+        l_0: 初始特征向量 [h_prev, current_temp, direction]
+        
+        返回:
+        l_d: 内部层输出
+        """
+        l = l_0
+        for W_a, W_b in self.internal_layers:
+            # 直接使用 Dense 层的 tanh 激活
+            l_a = W_a(l)
+            l_b = W_b(l)
+            l = l_a * l_b
+        return l
+    
+    def calc_gate_params(self, l_d):
+        """
+        计算门控参数 (exp激活确保非负)
+        
+        参数:
+        l_d: 内部层输出
+        
+        返回:
+        alpha, beta, gamma: 三个门控参数
+        """
+        alpha = tf.exp(self.W_alpha(l_d))  # 应变增量门控
+        beta = tf.exp(self.W_beta(l_d))    # 时间增量门控
+        gamma = tf.exp(self.W_gamma(l_d))  # 温度门控
+        return alpha, beta, gamma
+    
+    def calc_update_gate(self, alpha, beta, gamma, delta_features):
+        """
+        计算更新门
+        
+        参数:
+        alpha, beta, gamma: 门控参数
+        delta_features: [delta_strain, delta_time, delta_temperature]
+        
+        返回:
+        z: 更新门值
+        """
+        delta_strain = delta_features[..., 0:1]
+        delta_time = delta_features[..., 1:2]
+        delta_temperature = delta_features[..., 2:3]
+        
+        z = 1 - tf.exp(-alpha * tf.abs(delta_strain) - 
+                       beta * delta_time - 
+                       gamma * tf.abs(delta_temperature))
+        return z
+    
+    def reconstruct_temp_seq(self, delta_x):
+        """
+        重建温度序列
+        
+        参数:
+        delta_x: 输入特征 [delta_strain, delta_time, delta_temperature, init_strain, init_time, init_temp] (batch, seq_len, 6)
+        
+        返回:
+        temp_seq: 重建后的温度序列 (batch, seq_len, 1)
+        """
+        # 分离动态特征和静态特征
+        delta_features = delta_x[..., :3]  # [delta_strain, delta_time, delta_temperature]
+        init_features = delta_x[..., 3:]   # [init_strain, init_time, init_temp]
+        
+        # 获取初始温度和温度增量
+        init_temp = init_features[..., 0, 2:3]  # (batch, 1)
+        delta_temp = delta_features[..., 2:3]   # (batch, seq_len, 1)
+        
+        # 计算温度序列
+        temp_seq = tf.cumsum(delta_temp, axis=1)  # 累加温度增量
+        temp_seq = temp_seq + init_temp  # 加上初始温度
+        
+        return temp_seq
 
     def call(self, inputs):
-        state_prev, delta_input = inputs
-        x = Concatenate()([state_prev, delta_input])
-        x = self.fc1(x)
-        x = self.fc2(x)
-        delta_state = self.out(x)
-        return state_prev + delta_state
+        """
+        前向传播
+        
+        参数:
+        inputs: [h_prev, delta_x]
+            h_prev: 前一步状态向量 (batch, state_dim)
+            delta_x: 输入特征 [delta_strain, delta_time, delta_temperature, init_strain, init_time, init_temp] (batch, seq_len, 6)
+            
+        返回:
+        h_n: 新状态向量 (batch, state_dim)
+        sigma_n: 输出应力 (batch, 1)
+        """
+        h_prev, delta_x = inputs
+        
+        # 分离动态特征和静态特征
+        delta_features = delta_x[..., :3]  # [delta_strain, delta_time, delta_temperature]
+        
+        # 1. 重建温度序列
+        temp_seq = self.reconstruct_temp_seq(delta_x)
+        
+        # 2. 计算方向向量 (仅对动态特征)
+        direction = self.calc_direction_vec(delta_features)
+        
+        # 3. 内部层处理
+        l_0 = tf.concat([h_prev, temp_seq, direction], axis=-1)
+        l_d = self.process_internal_layers(l_0)
+        
+        # 4. 计算门控参数
+        alpha, beta, gamma = self.calc_gate_params(l_d)
+        
+        # 5. 计算候选状态
+        c_n = tf.tanh(self.W_c(l_d))
+        
+        # 6. 计算更新门
+        z = self.calc_update_gate(alpha, beta, gamma, delta_features)
+        
+        # 7. 状态更新
+        h_n = (1 - z) * h_prev + z * c_n
+        
+        # 8. 输出应力
+        sigma_n = self.W_out(h_n)
+        
+        return h_n, sigma_n
 
 class MSC_Sequence(tf.keras.layers.Layer):
-    def __init__(self, state_dim=5, hidden_dim=32, **kwargs):
+    """
+    EMSC 序列处理层
+    
+    参数:
+    state_dim: 状态向量维度
+    input_dim: 输入特征维度 [delta_strain, delta_time, temperature]
+    hidden_dim: 内部层维度
+    num_internal_layers: 内部层数量
+    """
+    def __init__(self, state_dim=5, input_dim=3, hidden_dim=32, num_internal_layers=2, **kwargs):
         super().__init__(**kwargs)
         self.state_dim = state_dim
+        self.input_dim = input_dim
         self.hidden_dim = hidden_dim
-        self.msc_cell = MSC_Cell(state_dim=state_dim, hidden_dim=hidden_dim)
-
+        self.num_internal_layers = num_internal_layers
+        self.msc_cell = MSC_Cell(
+            state_dim=state_dim,
+            input_dim=input_dim,
+            hidden_dim=hidden_dim,
+            num_internal_layers=num_internal_layers
+        )
+        
     def call(self, inputs):
+        """
+        处理输入序列
+        
+        参数:
+        inputs: [delta_seq, state_0]
+            delta_seq: 输入序列 [delta_strain, delta_time, temperature] (batch, seq_len, input_dim)
+            state_0: 初始状态 (batch, state_dim)
+            
+        返回:
+        outputs: 输出序列 (True_Stress) (batch, seq_len, 1)
+        """
         delta_seq, state_0 = inputs
+        
+        # 使用 tf.while_loop 处理序列
         def step_fn(t, state, outputs):
-            delta_t = delta_seq[:, t, :]
-            state = self.msc_cell([state, delta_t])
-            outputs = outputs.write(t, state)
-            return t + 1, state, outputs
-
+            # 获取当前时间步的输入
+            delta_x_t = delta_seq[:, t, :]  # (batch, input_dim)
+            
+            # 调用 MSC 单元
+            new_state, output = self.msc_cell([state, delta_x_t])
+            
+            # 更新输出
+            outputs = outputs.write(t, output)
+            
+            return t + 1, new_state, outputs
+        
+        # 初始化输出张量数组
         outputs = tf.TensorArray(dtype=tf.float32, size=tf.shape(delta_seq)[1])
+        
+        # 执行循环
         _, final_state, outputs = tf.while_loop(
             lambda t, *_: t < tf.shape(delta_seq)[1],
             step_fn,
             [tf.constant(0), state_0, outputs]
         )
+        
+        # 转置输出 (batch, seq_len, 1)
         return tf.transpose(outputs.stack(), [1, 0, 2])
-
-def build_msc_model(state_dim=5, input_dim=3, output_dim=1):
-    delta_input = Input(shape=(None, input_dim), name='delta_input')
-    init_state = Input(shape=(state_dim,), name='init_state')
-
-    state_seq = MSC_Sequence(state_dim=state_dim)([delta_input, init_state])
-    stress_out = Dense(output_dim, name='stress_out')(state_seq)
-    return Model(inputs=[delta_input, init_state], outputs=stress_out)
-
-def build_msc_model_with_mask(state_dim=STATE_DIM, input_dim=INPUT_DIM, output_dim=1):
-    """
-    构建带有掩码机制的MSC模型，简化架构以避免形状问题
-    """
-    delta_input = Input(shape=(None, input_dim), name='delta_input')
-    init_state = Input(shape=(state_dim,), name='init_state')
-    mask = Input(shape=(None,), name='mask')
-    
-    # 使用掩码层处理序列
-    state_seq = MSC_Sequence(state_dim=state_dim)([delta_input, init_state])
-    
-    # 使用掩码创建注意力掩码
-    # 将1D掩码转换为2D掩码，适合注意力机制使用
-    # 注意：为了避免形状问题，我们直接将掩码应用到输出
-    masked_seq = tf.keras.layers.Multiply()([state_seq, tf.expand_dims(mask, -1)])
-    
-    # 输出层
-    stress_out = Dense(output_dim, name='stress_out')(masked_seq)
-    
-    return Model(inputs=[delta_input, init_state, mask], outputs=stress_out)
 
 
 class MSCProgressCallback(Callback):
@@ -457,6 +633,69 @@ class MSCProgressCallback(Callback):
             print(f"Average epoch time: {avg_epoch_time:.2f}s - "
                   f"Estimated remaining time: {estimated_time/60:.1f}min")
 
+
+class MaskedMSELoss(tf.keras.losses.Loss):
+    """
+    自定义掩码MSE损失类
+    """
+    def __init__(self, reduction=tf.keras.losses.Reduction.AUTO, name='masked_mse_loss'):
+        super().__init__(reduction=reduction, name=name)
+    
+    def call(self, y_true, y_pred, sample_weight=None):
+        # 确保输入是float32类型
+        y_true = tf.cast(y_true, tf.float32)
+        y_pred = tf.cast(y_pred, tf.float32)
+        
+        # 计算MSE
+        mse = tf.keras.losses.mean_squared_error(y_true, y_pred)
+        
+        # 如果提供了sample_weight（掩码），应用它
+        if sample_weight is not None:
+            sample_weight = tf.cast(sample_weight, tf.float32)
+            # 确保掩码形状与预测值匹配
+            sample_weight = tf.reshape(sample_weight, tf.shape(mse))
+            mse = mse * sample_weight
+            # 计算有效样本的平均损失
+            return tf.reduce_sum(mse) / tf.reduce_sum(sample_weight)
+        
+        return tf.reduce_mean(mse)
+    
+    def get_config(self):
+        """获取配置，用于序列化"""
+        base_config = super().get_config()
+        return base_config
+
+
+def build_msc_model(state_dim=STATE_DIM, input_dim=INPUT_DIM, output_dim=1,
+                   hidden_dim=HIDDEN_DIM, num_internal_layers=2):
+    """
+    构建 EMSC 模型
+    
+    参数:
+    state_dim: 状态向量维度
+    input_dim: 输入特征维度 [delta_strain, delta_time, delta_temperature]
+    output_dim: 输出维度
+    hidden_dim: 内部层维度
+    num_internal_layers: 内部层数量
+    """
+    # 输入层
+    delta_input = Input(shape=(None, input_dim), name='delta_input')
+    init_state = Input(shape=(state_dim,), name='init_state')
+    
+    # 使用 EMSC 序列层处理输入
+    state_seq = MSC_Sequence(
+        state_dim=state_dim,
+        input_dim=input_dim,
+        hidden_dim=hidden_dim,
+        num_internal_layers=num_internal_layers
+    )([delta_input, init_state])
+    
+    # 输出层
+    stress_out = Dense(output_dim, name='stress_out')(state_seq)
+    
+    return Model(inputs=[delta_input, init_state], outputs=stress_out)
+
+
 def load_or_create_model_with_history(model_path='./msc_models/', model_name='msc_model', 
                                      best_model_name='best_msc_model',
                                      state_dim=STATE_DIM, input_dim=INPUT_DIM, output_dim=1):
@@ -493,40 +732,9 @@ def load_or_create_model_with_history(model_path='./msc_models/', model_name='ms
             print(f"Error loading current model: {e}")
     
     print("Creating new model")
-    model = build_msc_model_with_mask(state_dim=state_dim, input_dim=input_dim, output_dim=output_dim)
+    model = build_msc_model(state_dim=state_dim, input_dim=input_dim, output_dim=output_dim)
     return model, True
 
-
-class MaskedMSELoss(tf.keras.losses.Loss):
-    """
-    自定义掩码MSE损失类
-    """
-    def __init__(self, reduction=tf.keras.losses.Reduction.AUTO, name='masked_mse_loss'):
-        super().__init__(reduction=reduction, name=name)
-    
-    def call(self, y_true, y_pred, sample_weight=None):
-        # 确保输入是float32类型
-        y_true = tf.cast(y_true, tf.float32)
-        y_pred = tf.cast(y_pred, tf.float32)
-        
-        # 计算MSE
-        mse = tf.keras.losses.mean_squared_error(y_true, y_pred)
-        
-        # 如果提供了sample_weight（掩码），应用它
-        if sample_weight is not None:
-            sample_weight = tf.cast(sample_weight, tf.float32)
-            # 确保掩码形状与预测值匹配
-            sample_weight = tf.reshape(sample_weight, tf.shape(mse))
-            mse = mse * sample_weight
-            # 计算有效样本的平均损失
-            return tf.reduce_sum(mse) / tf.reduce_sum(sample_weight)
-        
-        return tf.reduce_mean(mse)
-    
-    def get_config(self):
-        """获取配置，用于序列化"""
-        base_config = super().get_config()
-        return base_config
 
 def resume_training_from_checkpoint(model_path='./msc_models/', model_name='msc_model', 
                                    best_model_name='best_msc_model', resume_from_best=True):
@@ -614,17 +822,13 @@ def resume_training_from_checkpoint(model_path='./msc_models/', model_name='msc_
 
 def create_training_config():
     """
-    创建训练配置字典，便于管理和保存训练参数
+    创建训练配置字典
     """
     config = {
         'STATE_DIM': STATE_DIM,
         'INPUT_DIM': INPUT_DIM,
         'HIDDEN_DIM': HIDDEN_DIM,
         'LEARNING_RATE': LEARNING_RATE,
-        'TARGET_SEQUENCE_LENGTH': TARGET_SEQUENCE_LENGTH,
-        'WINDOW_SIZE': WINDOW_SIZE,
-        'STRIDE': STRIDE,
-        'MAX_SUBSEQUENCES': MAX_SUBSEQUENCES,
         'train_test_split_ratio': 0.8,
         'random_seed': 42
     }
@@ -735,7 +939,6 @@ if __name__ == '__main__':
     tf.keras.backend.set_floatx('float32')
     data_dir = "/mnt/data/msc_models/"
     if os.path.exists(data_dir):
-        # 设置模型保存路径
         save_model_path = data_dir
     else:
         data_dir = '/Users/tianyunhu/Documents/temp/code/Test_app/EMSC_Model'
@@ -743,15 +946,15 @@ if __name__ == '__main__':
 
     print(f"save_model_path: {save_model_path}")
 
-    model_name = 'msc_model'  # SavedModel格式不需要文件扩展名
+    model_name = 'msc_model'
     best_model_name = 'best_msc_model'
     dataset_path = os.path.join(data_dir, 'dataset.npz')
 
     # 设置训练参数
-    resume_training = True  # 设置为True以恢复训练，False从头开始
-    epochs = 500  # 总的训练epochs数（包括之前已训练的）
+    resume_training = True
+    epochs = 500
     batch_size = 8
-    save_frequency = 1  # 每5个epoch保存一次
+    save_frequency = 1
     
     # 创建和保存训练配置
     training_config = create_training_config()
@@ -762,7 +965,7 @@ if __name__ == '__main__':
     })
     save_training_config(training_config, save_model_path)
     
-    # 尝试从npz文件加载数据集，如果不存在则重新处理数据
+    # 加载数据集
     dataset_path = '/Users/tianyunhu/Documents/temp/code/Test_app/EMSC_Model/msc_models/dataset.npz'
     X_paths, Y_paths = load_dataset_from_npz(dataset_path)
     if X_paths is None or Y_paths is None:
@@ -787,62 +990,50 @@ if __name__ == '__main__':
     y_scaled = [y_scaler.transform(y) for y in Y_paths]
     print("数据标准化完成")
 
-    # 准备序列和掩码
+    # 准备训练数据
     print("准备训练序列...")
     X_seq = []
     Y_seq = []
-    masks = []
-    init_states = []  # 新增：存储初始状态
+    init_states = []
     
     for x, y in zip(x_scaled, y_scaled):
-        seq_len = len(x)
-        mask = np.ones(min(seq_len, WINDOW_SIZE), dtype=np.float32)
+        # 创建初始状态向量
+        init_state = np.zeros(STATE_DIM, dtype=np.float32)
         
-        x_padded = np.pad(x[:WINDOW_SIZE], 
-                        ((0, max(0, WINDOW_SIZE - seq_len)), (0, 0)), 
-                        mode='constant', constant_values=0)
-        y_padded = np.pad(y[:WINDOW_SIZE], 
-                        ((0, max(0, WINDOW_SIZE - seq_len)), (0, 0)), 
-                        mode='constant', constant_values=0)
-        mask_padded = np.pad(mask, 
-                           (0, max(0, WINDOW_SIZE - len(mask))), 
-                           mode='constant', constant_values=0)
-        
-        # 为每个序列创建一个STATE_DIM维度的初始状态向量
-        init_state = np.zeros(STATE_DIM, dtype=np.float32)  # 使用零向量作为初始状态
-        
-        X_seq.append(x_padded)
-        Y_seq.append(y_padded)
-        masks.append(mask_padded)
+        X_seq.append(x)
+        Y_seq.append(y)
         init_states.append(init_state)
     
+    # 转换为numpy数组
     X_seq = np.array(X_seq, dtype=np.float32)
     Y_seq = np.array(Y_seq, dtype=np.float32)
-    masks = np.array(masks, dtype=np.float32)
-    init_states = np.array(init_states, dtype=np.float32)  # 转换为numpy数组
+    init_states = np.array(init_states, dtype=np.float32)
     print("训练序列准备完成")
 
     # 随机打乱序列
     print("随机打乱训练序列...")
-    np.random.seed(training_config['random_seed'])  # 使用配置中的随机种子
+    np.random.seed(training_config['random_seed'])
     indices = np.random.permutation(len(X_seq))
     X_seq = X_seq[indices]
     Y_seq = Y_seq[indices]
-    masks = masks[indices]
-    init_states = init_states[indices]  # 同时打乱初始状态
+    init_states = init_states[indices]
 
     # 划分训练集和验证集
     train_size = int(training_config['train_test_split_ratio'] * len(X_seq))
     X_train = X_seq[:train_size]
     Y_train = Y_seq[:train_size]
-    mask_train = masks[:train_size]
-    init_states_train = init_states[:train_size]  # 划分训练集的初始状态
+    init_states_train = init_states[:train_size]
     
     X_val = X_seq[train_size:]
     Y_val = Y_seq[train_size:]
-    mask_val = masks[train_size:]
-    init_states_val = init_states[train_size:]  # 划分验证集的初始状态
+    init_states_val = init_states[train_size:]
     
+    print(f"训练集大小: {len(X_train)}")
+    print(f"验证集大小: {len(X_val)}")
+    print(f"输入维度: {INPUT_DIM} [delta_strain, delta_time, delta_temperature]")
+    print(f"输出维度: 1 [True_Stress]")
+    print(f"状态维度: {STATE_DIM}")
+
     # 决定是恢复训练还是从头开始
     epoch_offset = 0
     if resume_training:
@@ -875,11 +1066,9 @@ if __name__ == '__main__':
     
     # 编译模型
     optimizer = Adam(LEARNING_RATE)
-    loss_fn = MaskedMSELoss()
-    
     model.compile(
         optimizer=optimizer,
-        loss=loss_fn
+        loss='mse'  # 使用标准MSE损失，因为不再需要掩码
     )
     
     if is_new_model:
@@ -918,24 +1107,22 @@ if __name__ == '__main__':
         history = model.fit(
             x={
                 'delta_input': X_train, 
-                'init_state': init_states_train,  # 使用正确维度的初始状态
-                'mask': mask_train
+                'init_state': init_states_train
             },
             y=Y_train,
             validation_data=(
                 {
                     'delta_input': X_val,
-                    'init_state': init_states_val,  # 使用正确维度的初始状态
-                    'mask': mask_val
+                    'init_state': init_states_val
                 },
                 Y_val
             ),
             batch_size=batch_size,
             epochs=epochs,
-            initial_epoch=initial_epoch,  # 从指定的epoch开始
+            initial_epoch=initial_epoch,
             verbose=1,
-            shuffle=True,  # 每个epoch打乱训练数据
-            callbacks=[progress_callback]  # 添加自定义回调
+            shuffle=True,
+            callbacks=[progress_callback]
         )
         
         # 训练完成后最终保存
