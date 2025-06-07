@@ -986,10 +986,13 @@ if __name__ == '__main__':
     save_training_config(training_config, save_model_path)
     
     # 加载数据集
-    dataset_path = '/Users/tianyunhu/Documents/temp/code/Test_app/EMSC_Model/msc_models/dataset.npz'
+    dataset_path = data_dir + '/dataset.npz'
     X_paths, Y_paths = load_dataset_from_npz(dataset_path)
+    
     if X_paths is None or Y_paths is None:
-        raise ValueError("无法加载数据集，请确保数据集已正确生成")
+        dataset_path = '/Users/tianyunhu/Documents/temp/code/Test_app/EMSC_Model/msc_models/dataset.npz'
+        X_paths, Y_paths = load_dataset_from_npz(dataset_path)
+
     
     # 加载标准化器
     scaler_path = os.path.join(save_model_path, 'scalers')
