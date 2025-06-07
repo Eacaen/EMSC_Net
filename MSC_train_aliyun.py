@@ -35,30 +35,6 @@ import h5py
 from datetime import datetime
 import time
 
-print(f"当前工作目录: {os.getcwd()}")
-print(tf.__version__)
-
-# 状态维度：定义MSC单元内部状态向量的维度
-# 这个参数决定了模型内部状态的复杂度，影响模型捕捉材料行为的能力
-# 较大的值可以表示更复杂的材料状态，但会增加模型参数量和训练难度
-STATE_DIM = 8
-
-# 输入维度：定义模型输入特征的维度
-# 对于材料本构模型，通常包括应变增量、时间增量、温度增量等物理量
-# 这个参数需要与实验数据的特征数量相匹配
-INPUT_DIM = 6  # [delta_strain, delta_time, delta_temperature, init_strain, init_time, init_temp]
-
-# 隐藏层维度：定义神经网络隐藏层的神经元数量
-# 这个参数影响模型的表达能力和复杂度
-# 较大的值可以学习更复杂的映射关系，但可能导致过拟合和计算开销增加
-HIDDEN_DIM = 32
-
-# 学习率：定义优化算法的学习率
-# 这个参数控制模型参数更新的步长，影响训练速度和稳定性
-LEARNING_RATE = 1e-3
-
-TARGET_SEQUENCE_LENGTH = 5000  # 更新目标序列长度
-
 
 class MSC_Cell(tf.keras.layers.Layer):
     """
@@ -666,14 +642,58 @@ class MaskedMSELoss(tf.keras.losses.Loss):
         return base_config
 
 
-def build_msc_model(state_dim=STATE_DIM, input_dim=INPUT_DIM, output_dim=1,
-                   hidden_dim=HIDDEN_DIM, num_internal_layers=2):
+def create_training_config(state_dim=8, input_dim=6, hidden_dim=32, learning_rate=1e-3, 
+                         target_sequence_length=5000, window_size=None, stride=None, 
+                         max_subsequences=200, train_test_split_ratio=0.8, random_seed=42,
+                         epochs=500, batch_size=8, save_frequency=1):
+    """
+    创建训练配置字典
+    
+    参数:
+    state_dim: 状态向量维度
+    input_dim: 输入特征维度
+    hidden_dim: 隐藏层维度
+    learning_rate: 学习率
+    target_sequence_length: 目标序列长度
+    window_size: 滑动窗口大小
+    stride: 滑动窗口步长
+    max_subsequences: 最大子序列数
+    train_test_split_ratio: 训练集比例
+    random_seed: 随机种子
+    epochs: 训练轮数
+    batch_size: 批次大小
+    save_frequency: 保存频率
+    """
+    if window_size is None:
+        window_size = target_sequence_length
+    if stride is None:
+        stride = target_sequence_length // 10
+        
+    config = {
+        'STATE_DIM': state_dim,
+        'INPUT_DIM': input_dim,
+        'HIDDEN_DIM': hidden_dim,
+        'LEARNING_RATE': learning_rate,
+        'TARGET_SEQUENCE_LENGTH': target_sequence_length,
+        'WINDOW_SIZE': window_size,
+        'STRIDE': stride,
+        'MAX_SUBSEQUENCES': max_subsequences,
+        'train_test_split_ratio': train_test_split_ratio,
+        'random_seed': random_seed,
+        'epochs': epochs,
+        'batch_size': batch_size,
+        'save_frequency': save_frequency
+    }
+    return config
+
+def build_msc_model(state_dim=8, input_dim=6, output_dim=1,
+                   hidden_dim=32, num_internal_layers=2):
     """
     构建 EMSC 模型
     
     参数:
     state_dim: 状态向量维度
-    input_dim: 输入特征维度 [delta_strain, delta_time, delta_temperature]
+    input_dim: 输入特征维度 [delta_strain, delta_time, delta_temperature, init_strain, init_time, init_temp]
     output_dim: 输出维度
     hidden_dim: 内部层维度
     num_internal_layers: 内部层数量
@@ -695,10 +715,10 @@ def build_msc_model(state_dim=STATE_DIM, input_dim=INPUT_DIM, output_dim=1,
     
     return Model(inputs=[delta_input, init_state], outputs=stress_out)
 
-
 def load_or_create_model_with_history(model_path='./msc_models/', model_name='msc_model', 
                                      best_model_name='best_msc_model',
-                                     state_dim=STATE_DIM, input_dim=INPUT_DIM, output_dim=1):
+                                     state_dim=8, input_dim=6, output_dim=1,
+                                     hidden_dim=32, num_internal_layers=2):
     """
     加载已存在的SavedModel格式模型或创建新模型
     """
@@ -732,24 +752,21 @@ def load_or_create_model_with_history(model_path='./msc_models/', model_name='ms
             print(f"Error loading current model: {e}")
     
     print("Creating new model")
-    model = build_msc_model(state_dim=state_dim, input_dim=input_dim, output_dim=output_dim)
+    model = build_msc_model(
+        state_dim=state_dim,
+        input_dim=input_dim,
+        output_dim=output_dim,
+        hidden_dim=hidden_dim,
+        num_internal_layers=num_internal_layers
+    )
     return model, True
 
-
 def resume_training_from_checkpoint(model_path='./msc_models/', model_name='msc_model', 
-                                   best_model_name='best_msc_model', resume_from_best=True):
+                                   best_model_name='best_msc_model', resume_from_best=True,
+                                   state_dim=8, input_dim=6, output_dim=1,
+                                   hidden_dim=32, num_internal_layers=2):
     """
     从SavedModel格式的检查点恢复训练
-    
-    参数:
-    model_path: 模型保存路径
-    model_name: 当前模型目录名
-    best_model_name: 最佳模型目录名
-    resume_from_best: 是否从最佳模型恢复（默认True）
-    
-    返回:
-    model: 加载的模型
-    epoch_offset: 已训练的epoch数
     """
     # 确定要加载的模型目录
     if resume_from_best:
@@ -819,20 +836,6 @@ def resume_training_from_checkpoint(model_path='./msc_models/', model_name='msc_
         epoch_offset = 0
     
     return model, epoch_offset
-
-def create_training_config():
-    """
-    创建训练配置字典
-    """
-    config = {
-        'STATE_DIM': STATE_DIM,
-        'INPUT_DIM': INPUT_DIM,
-        'HIDDEN_DIM': HIDDEN_DIM,
-        'LEARNING_RATE': LEARNING_RATE,
-        'train_test_split_ratio': 0.8,
-        'random_seed': 42
-    }
-    return config
 
 def save_training_config(config, save_path):
     """保存训练配置"""
@@ -935,34 +938,51 @@ def load_dataset_from_npz(npz_path='./msc_models/dataset.npz'):
         return None, None
 
 if __name__ == '__main__':
+
+    print(f"当前工作目录: {os.getcwd()}")
+    print(tf.__version__)
+
     # 设置TensorFlow的默认数据类型为float32
     tf.keras.backend.set_floatx('float32')
+    
+    # 模型参数配置
+    state_dim = 8
+    input_dim = 6  # [delta_strain, delta_time, delta_temperature, init_strain, init_time, init_temp]
+    hidden_dim = 32
+    learning_rate = 1e-3
+    target_sequence_length = 1000
+    
+    # 训练参数配置
+    epochs = 500
+    batch_size = 8
+    save_frequency = 1
+    resume_training = True
+    
+    # 路径配置
     data_dir = "/mnt/data/msc_models/"
     if os.path.exists(data_dir):
         save_model_path = data_dir
     else:
         data_dir = '/Users/tianyunhu/Documents/temp/code/Test_app/EMSC_Model'
         save_model_path = os.path.join(data_dir, 'msc_models')
-
+    
     print(f"save_model_path: {save_model_path}")
-
+    
     model_name = 'msc_model'
     best_model_name = 'best_msc_model'
     dataset_path = os.path.join(data_dir, 'dataset.npz')
-
-    # 设置训练参数
-    resume_training = True
-    epochs = 500
-    batch_size = 8
-    save_frequency = 1
     
     # 创建和保存训练配置
-    training_config = create_training_config()
-    training_config.update({
-        'epochs': epochs,
-        'batch_size': batch_size,
-        'save_frequency': save_frequency
-    })
+    training_config = create_training_config(
+        state_dim=state_dim,
+        input_dim=input_dim,
+        hidden_dim=hidden_dim,
+        learning_rate=learning_rate,
+        target_sequence_length=target_sequence_length,
+        epochs=epochs,
+        batch_size=batch_size,
+        save_frequency=save_frequency
+    )
     save_training_config(training_config, save_model_path)
     
     # 加载数据集
@@ -998,7 +1018,7 @@ if __name__ == '__main__':
     
     for x, y in zip(x_scaled, y_scaled):
         # 创建初始状态向量
-        init_state = np.zeros(STATE_DIM, dtype=np.float32)
+        init_state = np.zeros(state_dim, dtype=np.float32)
         
         X_seq.append(x)
         Y_seq.append(y)
@@ -1030,9 +1050,9 @@ if __name__ == '__main__':
     
     print(f"训练集大小: {len(X_train)}")
     print(f"验证集大小: {len(X_val)}")
-    print(f"输入维度: {INPUT_DIM} [delta_strain, delta_time, delta_temperature]")
+    print(f"输入维度: {input_dim} [delta_strain, delta_time, delta_temperature]")
     print(f"输出维度: 1 [True_Stress]")
-    print(f"状态维度: {STATE_DIM}")
+    print(f"状态维度: {state_dim}")
 
     # 决定是恢复训练还是从头开始
     epoch_offset = 0
@@ -1042,7 +1062,12 @@ if __name__ == '__main__':
             model_path=save_model_path,
             model_name=model_name,
             best_model_name=best_model_name,
-            resume_from_best=True
+            resume_from_best=True,
+            state_dim=state_dim,
+            input_dim=input_dim,
+            output_dim=1,
+            hidden_dim=hidden_dim,
+            num_internal_layers=2
         )
         
         if resumed_model is not None:
@@ -1054,18 +1079,28 @@ if __name__ == '__main__':
             model, is_new_model = load_or_create_model_with_history(
                 model_path=save_model_path,
                 model_name=model_name,
-                best_model_name=best_model_name
+                best_model_name=best_model_name,
+                state_dim=state_dim,
+                input_dim=input_dim,
+                output_dim=1,
+                hidden_dim=hidden_dim,
+                num_internal_layers=2
             )
     else:
         print("从头开始训练...")
         model, is_new_model = load_or_create_model_with_history(
             model_path=save_model_path,
             model_name=model_name,
-            best_model_name=best_model_name
+            best_model_name=best_model_name,
+            state_dim=state_dim,
+            input_dim=input_dim,
+            output_dim=1,
+            hidden_dim=hidden_dim,
+            num_internal_layers=2
         )
     
     # 编译模型
-    optimizer = Adam(LEARNING_RATE)
+    optimizer = Adam(learning_rate)
     model.compile(
         optimizer=optimizer,
         loss='mse'  # 使用标准MSE损失，因为不再需要掩码

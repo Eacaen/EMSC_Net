@@ -598,11 +598,15 @@ def main():
         return
     
     # 创建数据集生成器
+    target_sequence_length = 1000
+    window_size = 1000
+    stride = 500
+    max_subsequences = 200
     generator = EMSCDatasetGenerator(
-        target_sequence_length=5000,
-        window_size=5000,
-        stride=500,
-        max_subsequences=200
+        target_sequence_length=target_sequence_length,
+        window_size=window_size,
+        stride=stride,
+        max_subsequences=max_subsequences
     )
     
     # 生成数据集
