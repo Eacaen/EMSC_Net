@@ -4,8 +4,6 @@ import matplotlib.pyplot as plt
 import tensorflow as tf
 import joblib
 import os
-import glob
-import argparse
 from MSC_train_aliyun import MSC_Sequence, MaskedMSELoss
 
 # 定义列名映射
@@ -394,38 +392,14 @@ def plot_results(strain_sequence, predicted_stress, time_sequence, temperature,
         print(f"决定系数 (R²): {error_metrics['R2']:.4f}")
 
 if __name__ == '__main__':
-    # 创建命令行参数解析器
-    parser = argparse.ArgumentParser(description='EMSC模型预测参数')
-    parser.add_argument('--data_dir', type=str, 
-                      default='/Users/tianyunhu/Documents/temp/CTC/PPCC/',
-                      help='实验数据目录路径')
-    parser.add_argument('--model_dir', type=str,
-                      default='/Users/tianyunhu/Documents/temp/code/Test_app/EMSC_Model/msc_models/best_msc_model',
-                      help='模型目录路径')
-    parser.add_argument('--scaler_dir', type=str,
-                      default='/Users/tianyunhu/Documents/temp/code/Test_app/EMSC_Model/msc_models/scalers',
-                      help='标准化器目录路径')
-    parser.add_argument('--random_file', action='store_true',
-                      help='是否随机选择数据文件')
-    parser.add_argument('--specific_file', type=str,
-                      help='指定要预测的数据文件路径')
-    parser.add_argument('--state_dim', type=int, default=8,
-                      help='状态向量维度 (默认: 8)')
-    parser.add_argument('--input_dim', type=int, default=6,
-                      help='输入特征维度 (默认: 6)')
-    parser.add_argument('--window_size', type=int, default=1000,
-                      help='预测窗口大小 (默认: 1000)')
-    
-    args = parser.parse_args()
-    
     # 模型参数配置
-    state_dim = args.state_dim
-    input_dim = args.input_dim
-    window_size = args.window_size
+    state_dim = 8
+    input_dim = 6  # [delta_strain, delta_time, delta_temperature, init_strain, init_time, init_temp]
+    window_size = 1000
     
     # 1. 加载模型和标准化器
-    model_dir = args.model_dir
-    scaler_dir = args.scaler_dir
+    model_dir = '/Users/tianyunhu/Documents/temp/code/Test_app/EMSC_Model/msc_models/best_msc_model'  
+    scaler_dir = '/Users/tianyunhu/Documents/temp/code/Test_app/EMSC_Model/msc_models/scalers'
     x_scaler_path = os.path.join(scaler_dir, 'x_scaler.save')
     y_scaler_path = os.path.join(scaler_dir, 'y_scaler.save')
     
@@ -440,44 +414,16 @@ if __name__ == '__main__':
         exit(1)
     
     # 2. 加载实验数据
-    if args.specific_file:
-        # 使用指定的文件
-        file_path = args.specific_file
-        if not os.path.exists(file_path):
-            print(f"指定的文件不存在: {file_path}")
-            exit(1)
-    else:
-        # 从目录中选择文件
-        file_path = args.data_dir
-        if args.random_file:
-            # 随机选择一个文件
-            file_list = glob.glob(os.path.join(file_path, "*.xlsx"))
-            if not file_list:
-                print(f"在目录 {file_path} 中未找到任何Excel文件")
-                exit(1)
-            file_path = np.random.choice(file_list)
-            print(f"随机选择的文件: {os.path.basename(file_path)}")
-        else:
-            # 使用目录中的所有文件
-            file_list = glob.glob(os.path.join(file_path, "*.xlsx"))
-            if not file_list:
-                print(f"在目录 {file_path} 中未找到任何Excel文件")
-                exit(1)
-            print(f"找到 {len(file_list)} 个数据文件")
-            for i, f in enumerate(file_list):
-                print(f"{i+1}. {os.path.basename(f)}")
-            try:
-                choice = int(input("\n请选择要预测的文件编号 (1-{}): ".format(len(file_list))))
-                if 1 <= choice <= len(file_list):
-                    file_path = file_list[choice-1]
-                else:
-                    print("无效的选择")
-                    exit(1)
-            except ValueError:
-                print("请输入有效的数字")
-                exit(1)
-    
-    print(f"\n开始处理文件: {os.path.basename(file_path)}")
+
+    file_path = '/Users/tianyunhu/Documents/temp/CTC/PPCC/'
+    # 随机选择一个文件
+    import glob
+    file_list = glob.glob(os.path.join(file_path, "*.xlsx"))
+    if not file_list:
+        print("未找到任何Excel文件")
+        exit(1)
+    file_path = np.random.choice(file_list)
+    print(f"随机选择的文件: {os.path.basename(file_path)}")
     exp_strain, exp_stress, exp_time, temperature = load_experimental_data(file_path)
     
     if exp_strain is None:

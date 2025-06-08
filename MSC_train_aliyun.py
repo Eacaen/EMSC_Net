@@ -35,7 +35,6 @@ import h5py
 from datetime import datetime
 import time
 
-
 class MSC_Cell(tf.keras.layers.Layer):
     """
     增强型最小状态单元 (EMSC) 实现
@@ -958,11 +957,12 @@ if __name__ == '__main__':
     # 创建命令行参数解析器
     parser = argparse.ArgumentParser(description='EMSC模型训练参数')
     parser.add_argument('--epochs', type=int, default=2000, help='训练轮数 (默认: 2000)')
+    parser.add_argument('--save_frequency', type=int, default=10, help='模型保存频率，每N个epoch保存一次 (默认: 10)')
     args = parser.parse_args()
     
     epochs = args.epochs
     batch_size = 8
-    save_frequency = 1
+    save_frequency = args.save_frequency
     resume_training = True
     
     # 路径配置
@@ -1130,7 +1130,9 @@ if __name__ == '__main__':
     )
     
     # 计算实际要训练的epochs
-    remaining_epochs = epochs - epoch_offset
+    # remaining_epochs = epochs - epoch_offset
+    remaining_epochs = epochs
+
     if remaining_epochs <= 0:
         print(f"模型已经训练了 {epoch_offset} epochs，达到设定的总epochs {epochs}")
         print("如需继续训练，请增加总epochs数")
