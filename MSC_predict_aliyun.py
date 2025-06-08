@@ -4,14 +4,28 @@ import matplotlib.pyplot as plt
 import tensorflow as tf
 import joblib
 import os
-from MSC_train_aliyun import MSC_Sequence, extract_temperature_from_filename, MaskedMSELoss
-STATE_DIM = 5
-INPUT_DIM = 3
+from MSC_train_aliyun import MSC_Sequence, MaskedMSELoss
+
+# 定义列名映射
+column_mapping = {
+    'time': 'time',
+    'true_strain': 'true_strain',
+    'true_stress': 'true_stress',
+    'temperature': 'temperature',
+    'delta_strain': 'delta_strain',  # 原 Δε
+    'delta_time': 'delta_time',      # 原 Δt
+    'delta_temperature': 'delta_temperature',  # 原 ΔT
+    'init_strain': 'init_strain',    # 初始应变
+    'init_time': 'init_time',        # 初始时间
+    'init_temp': 'init_temp'         # 初始温度
+}
 
 # 加载模型和数据标准化器
 def load_trained_model(model_dir='msc_model', 
                       x_scaler_path='x_scaler.save',
-                      y_scaler_path='y_scaler.save'):
+                      y_scaler_path='y_scaler.save',
+                      state_dim=8,
+                      input_dim=6):
     """
     加载SavedModel格式的模型和数据标准化器
     
@@ -19,6 +33,8 @@ def load_trained_model(model_dir='msc_model',
     model_dir: SavedModel格式模型目录
     x_scaler_path: 输入数据标准化器路径
     y_scaler_path: 输出数据标准化器路径
+    state_dim: 状态向量维度
+    input_dim: 输入特征维度
     
     返回:
     model: 加载的模型
@@ -46,7 +62,7 @@ def load_trained_model(model_dir='msc_model',
         print(f"Error loading model or scalers: {e}")
         raise
 
-def prepare_input_data(strain_sequence, temperature, time_sequence=None):
+def prepare_input_data(strain_sequence, temperature, time_sequence=None, state_dim=8, input_dim=6, x_scaler=None):
     """
     准备模型输入数据
     
@@ -54,6 +70,9 @@ def prepare_input_data(strain_sequence, temperature, time_sequence=None):
     strain_sequence: 应变序列 (numpy array 或 list)
     temperature: 温度值 (标量)
     time_sequence: 时间序列 (可选，如果为None则自动生成均匀时间步)
+    state_dim: 状态向量维度
+    input_dim: 输入特征维度
+    x_scaler: 输入数据标准化器
     
     返回:
     X_seq: 预处理后的输入序列
@@ -70,18 +89,39 @@ def prepare_input_data(strain_sequence, temperature, time_sequence=None):
     # 确保时间增量不为0
     delta_time = np.maximum(delta_time, 1e-5)
     
-    # 构建输入特征矩阵 [Δε, Δt, T]
-    X = np.column_stack([delta_strain, delta_time, np.full_like(delta_strain, temperature)])
+    # 获取初始值
+    init_strain = strain_sequence[0]
+    init_time = time_sequence[0]
+    init_temp = temperature
+    
+    # 构建输入特征矩阵 [Δε, Δt, ΔT, ε0, t0, T0]
+    X = np.column_stack([
+        delta_strain, 
+        delta_time, 
+        np.zeros_like(delta_strain),  # ΔT = 0 (温度恒定)
+        np.full_like(delta_strain, init_strain),
+        np.full_like(delta_strain, init_time),
+        np.full_like(delta_strain, init_temp)
+    ])
     
     # 使用保存的标准化器进行数据标准化
     X_norm = x_scaler.transform(X)
     
     # 准备序列输入
-    X_seq = X_norm.reshape(1, -1, 3)  # 添加batch维度和特征维度
-    init_state = np.zeros((1, STATE_DIM))  # 添加batch维度
+    X_seq = X_norm.reshape(1, -1, input_dim)  # 添加batch维度和特征维度
+    init_state = np.zeros((1, state_dim))  # 添加batch维度
     mask = np.ones((1, X_norm.shape[0]), dtype=np.float32)  # 全1掩码，表示所有数据点有效
     
     return X_seq, init_state, mask
+
+def extract_strain_rate_from_filename(filename):
+    """从文件名中提取应变率信息"""
+    try:
+        strain_rate = os.path.splitext(filename)[0].split('_')[2]
+        return float(strain_rate)
+    except (IndexError, ValueError) as e:
+        print(f"警告: 无法从文件名 {filename} 提取应变率信息: {e}")
+        return None
 
 def load_experimental_data(file_path):
     """
@@ -98,32 +138,37 @@ def load_experimental_data(file_path):
     """
     try:
         df = pd.read_excel(file_path)
-        df = df.rename(columns=lambda x: x.strip())
+        df = df.rename(columns=lambda x: x.strip().lower())
         
         # 检查必要的列是否存在
-        required_columns = {'Time', 'True_Strain', 'True_Stress'}
+        required_columns = {'time', 'true_strain', 'true_stress', 'temperature'}
         if not required_columns.issubset(df.columns):
             raise ValueError(f"Excel文件缺少必要的列: {required_columns}")
         
         # 提取数据
-        strain = df['True_Strain'].values
-        stress = df['True_Stress'].values
-        time = df['Time'].values
+        strain = df[column_mapping['true_strain']].values
+        stress = df[column_mapping['true_stress']].values
+        time = df[column_mapping['time']].values
+        temperature = df[column_mapping['temperature']].values[0]  # 取第一个温度值
+        
         # 如果文件名包含'com'，将应力和应变取反
         if 'com' in os.path.basename(file_path).lower():
             strain = -strain
             stress = -stress
             print(f"检测到压缩数据文件，已将应力和应变取反")
         
-        # 从文件名提取温度
-        temperature = extract_temperature_from_filename(file_path)
+        # 提取应变率信息
+        strain_rate = extract_strain_rate_from_filename(file_path)
+        if strain_rate is not None:
+            print(f"检测到应变率: {strain_rate:.2e} s⁻¹")
         
         return strain, stress, time, temperature
     except Exception as e:
         print(f"加载实验数据时出错: {e}")
         return None, None, None, None
 
-def predict_with_sliding_window(model, x_scaler, y_scaler, strain_sequence, temperature, time_sequence=None, window_size=500):
+def predict_with_sliding_window(model, x_scaler, y_scaler, strain_sequence, temperature, 
+                              time_sequence=None, window_size=1000, state_dim=8, input_dim=6):
     """
     使用滑动窗口进行预测，处理任意长度的输入序列
     
@@ -134,6 +179,8 @@ def predict_with_sliding_window(model, x_scaler, y_scaler, strain_sequence, temp
     temperature: 温度值
     time_sequence: 时间序列（可选）
     window_size: 窗口大小，默认为训练时使用的 WINDOW_SIZE
+    state_dim: 状态向量维度
+    input_dim: 输入特征维度
     
     返回:
     predicted_stress: 预测的应力值
@@ -147,13 +194,15 @@ def predict_with_sliding_window(model, x_scaler, y_scaler, strain_sequence, temp
     # 如果序列长度小于窗口大小，直接预测
     if sequence_length <= window_size:
         # 准备输入数据
-        X_seq, init_state, mask = prepare_input_data(strain_sequence, temperature, time_sequence)
+        X_seq, init_state, mask = prepare_input_data(
+            strain_sequence, temperature, time_sequence,
+            state_dim=state_dim, input_dim=input_dim, x_scaler=x_scaler
+        )
         
         # 进行预测
         y_pred_norm = model.predict({
             'delta_input': X_seq, 
-            'init_state': init_state, 
-            'mask': mask
+            'init_state': init_state
         })
         
         # 反标准化预测结果
@@ -183,13 +232,15 @@ def predict_with_sliding_window(model, x_scaler, y_scaler, strain_sequence, temp
                 window_time = np.pad(window_time, (0, pad_length), mode='edge')
             
             # 准备窗口数据
-            X_seq, init_state, mask = prepare_input_data(window_strain, temperature, window_time)
+            X_seq, init_state, mask = prepare_input_data(
+                window_strain, temperature, window_time,
+                state_dim=state_dim, input_dim=input_dim, x_scaler=x_scaler
+            )
             
             # 预测当前窗口
             y_pred_norm = model.predict({
                 'delta_input': X_seq, 
-                'init_state': init_state, 
-                'mask': mask
+                'init_state': init_state
             })
             
             # 反标准化预测结果
@@ -228,7 +279,8 @@ def predict_with_sliding_window(model, x_scaler, y_scaler, strain_sequence, temp
     
     return predicted_stress.reshape(-1, 1), time_sequence
 
-def predict_stress(model, x_scaler, y_scaler, strain_sequence, temperature, time_sequence=None):
+def predict_stress(model, x_scaler, y_scaler, strain_sequence, temperature, 
+                  time_sequence=None, state_dim=8, input_dim=6, window_size=1000):
     """
     使用模型进行应力预测
     
@@ -238,6 +290,9 @@ def predict_stress(model, x_scaler, y_scaler, strain_sequence, temperature, time
     strain_sequence: 应变序列
     temperature: 温度值
     time_sequence: 时间序列（可选）
+    state_dim: 状态向量维度
+    input_dim: 输入特征维度
+    window_size: 窗口大小
     
     返回:
     predicted_stress: 预测的应力值
@@ -249,7 +304,9 @@ def predict_stress(model, x_scaler, y_scaler, strain_sequence, temperature, time
         strain_sequence=strain_sequence,
         temperature=temperature,
         time_sequence=time_sequence,
-        window_size=500  # 使用与训练时相同的窗口大小
+        window_size=window_size,
+        state_dim=state_dim,
+        input_dim=input_dim
     )
 
 def calculate_error_metrics(y_pred, exp_strain, exp_stress, strain_sequence):
@@ -335,83 +392,78 @@ def plot_results(strain_sequence, predicted_stress, time_sequence, temperature,
         print(f"决定系数 (R²): {error_metrics['R2']:.4f}")
 
 if __name__ == '__main__':
+    # 模型参数配置
+    state_dim = 8
+    input_dim = 6  # [delta_strain, delta_time, delta_temperature, init_strain, init_time, init_temp]
+    window_size = 1000
+    
     # 1. 加载模型和标准化器
-    model_dir = '/Users/tianyunhu/Documents/temp/code/Test_app/EMSC_Model/msc_models/best_msc_model'  # 移除.h5扩展名
+    model_dir = '/Users/tianyunhu/Documents/temp/code/Test_app/EMSC_Model/msc_models/best_msc_model'  
     scaler_dir = '/Users/tianyunhu/Documents/temp/code/Test_app/EMSC_Model/msc_models/scalers'
     x_scaler_path = os.path.join(scaler_dir, 'x_scaler.save')
     y_scaler_path = os.path.join(scaler_dir, 'y_scaler.save')
     
     try:
-        model, x_scaler, y_scaler = load_trained_model(model_dir, x_scaler_path, y_scaler_path)
+        model, x_scaler, y_scaler = load_trained_model(
+            model_dir, x_scaler_path, y_scaler_path,
+            state_dim=state_dim,
+            input_dim=input_dim
+        )
     except Exception as e:
         print(f"Failed to load model or scalers: {e}")
         exit(1)
     
-    # 2. 选择模式：使用示例数据或加载实验数据
-    mode = 2
+    # 2. 加载实验数据
+
+    file_path = '/Users/tianyunhu/Documents/temp/CTC/PPCC/'
+    # 随机选择一个文件
+    import glob
+    file_list = glob.glob(os.path.join(file_path, "*.xlsx"))
+    if not file_list:
+        print("未找到任何Excel文件")
+        exit(1)
+    file_path = np.random.choice(file_list)
+    print(f"随机选择的文件: {os.path.basename(file_path)}")
+    exp_strain, exp_stress, exp_time, temperature = load_experimental_data(file_path)
     
-    if mode == "1":
-        # 使用示例数据
-        strain_sequence = np.linspace(0, 0.5, 100)
-        time_sequence = np.linspace(0, 0.5, 100)
-        temperature = 25.0
-        
-        # 预测
-        predicted_stress, time_sequence = predict_stress(
-            model, x_scaler, y_scaler,
-            strain_sequence=strain_sequence,
-            time_sequence=time_sequence,
-            temperature=temperature
-        )
-        
-        # 绘图
-        plot_results(
-            strain_sequence=strain_sequence,
-            predicted_stress=predicted_stress,
-            time_sequence=time_sequence,
-            temperature=temperature
-        )
-        
-    elif mode == 2:
-        # 加载实验数据
-        file_path = '/Users/tianyunhu/Documents/temp/CTC/PC-processed/PC_Ten_1e-2_80_2.xlsx'
-        exp_strain, exp_stress, exp_time, temperature = load_experimental_data(file_path)
-        # print('实验数据：', exp_strain, exp_stress, exp_time, temperature)
-        
-        if exp_strain is not None:
-            # 使用实验数据的应变范围进行预测
-            strain_sequence = exp_strain
-            time_sequence = exp_time
-            
-            # 预测
-            predicted_stress, time_sequence = predict_stress(
-                model, x_scaler, y_scaler,
-                strain_sequence=strain_sequence,
-                time_sequence=time_sequence,
-                temperature=temperature
-            )
-            
-            # 计算误差指标
-            error_metrics = calculate_error_metrics(
-                predicted_stress, exp_strain, exp_stress, strain_sequence
-            )
-            
-            # 绘图
-            plot_results(
-                strain_sequence=strain_sequence,
-                predicted_stress=predicted_stress,
-                time_sequence=time_sequence,
-                temperature=temperature,
-                exp_strain=exp_strain,
-                exp_stress=exp_stress,
-                exp_time=exp_time,
-                error_metrics=error_metrics
-            )
-            
-            # 打印预测结果示例
-            print("\n预测结果示例（前5个点）:")
-            print("应变\t实验应力(MPa)\t预测应力(MPa)")
-            for i in range(min(5, len(strain_sequence))):
-                print(f"{strain_sequence[i]:.4f}\t{exp_stress[i]:.2f}\t{predicted_stress[i][0]:.2f}")
-    else:
-        print("无效的选择") 
+    if exp_strain is None:
+        print("无法加载实验数据，程序退出")
+        exit(1)
+    
+    # 使用实验数据的应变范围进行预测
+    strain_sequence = exp_strain
+    time_sequence = exp_time
+    
+    # 预测
+    predicted_stress, time_sequence = predict_stress(
+        model, x_scaler, y_scaler,
+        strain_sequence=strain_sequence,
+        time_sequence=time_sequence,
+        temperature=temperature,
+        state_dim=state_dim,
+        input_dim=input_dim,
+        window_size=window_size
+    )
+    
+    # 计算误差指标
+    error_metrics = calculate_error_metrics(
+        predicted_stress, exp_strain, exp_stress, strain_sequence
+    )
+    
+    # 绘图
+    plot_results(
+        strain_sequence=strain_sequence,
+        predicted_stress=predicted_stress,
+        time_sequence=time_sequence,
+        temperature=temperature,
+        exp_strain=exp_strain,
+        exp_stress=exp_stress,
+        exp_time=exp_time,
+        error_metrics=error_metrics
+    )
+    
+    # 打印预测结果示例
+    print("\n预测结果示例（前5个点）:")
+    print("应变\t实验应力(MPa)\t预测应力(MPa)")
+    for i in range(min(5, len(strain_sequence))):
+        print(f"{strain_sequence[i]:.4f}\t{exp_stress[i]:.2f}\t{predicted_stress[i][0]:.2f}") 

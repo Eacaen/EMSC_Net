@@ -953,7 +953,14 @@ if __name__ == '__main__':
     target_sequence_length = 1000
     
     # 训练参数配置
-    epochs = 500
+    import argparse
+    
+    # 创建命令行参数解析器
+    parser = argparse.ArgumentParser(description='EMSC模型训练参数')
+    parser.add_argument('--epochs', type=int, default=2000, help='训练轮数 (默认: 2000)')
+    args = parser.parse_args()
+    
+    epochs = args.epochs
     batch_size = 8
     save_frequency = 1
     resume_training = True
@@ -988,7 +995,7 @@ if __name__ == '__main__':
     # 加载数据集
     dataset_path = data_dir + '/dataset.npz'
     X_paths, Y_paths = load_dataset_from_npz(dataset_path)
-    
+
     if X_paths is None or Y_paths is None:
         dataset_path = '/Users/tianyunhu/Documents/temp/code/Test_app/EMSC_Model/msc_models/dataset.npz'
         X_paths, Y_paths = load_dataset_from_npz(dataset_path)
