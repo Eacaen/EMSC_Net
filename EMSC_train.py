@@ -29,8 +29,8 @@ def setup_cpu_environment():
         cpu_count = 4  # 默认值
     
     # 设置线程数
-    # 保留一半CPU核心给系统和其他进程
-    num_workers = max(1, cpu_count // 2)
+    # 保留CPU核心给系统和其他进程
+    num_workers = max(1, cpu_count - 2)  # 保留2个CPU核心给系统和其他进程
     
     # 设置TensorFlow线程配置
     tf.config.threading.set_inter_op_parallelism_threads(num_workers)
