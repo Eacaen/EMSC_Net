@@ -404,8 +404,8 @@ if __name__ == '__main__':
     window_size = 1000
     
     # 1. 加载模型和标准化器
-    model_dir = '/Users/tianyunhu/Documents/temp/code/Test_app/EMSC_Model/msc_models/best_msc_model'  
-    scaler_dir = '/Users/tianyunhu/Documents/temp/code/Test_app/EMSC_Model/msc_models/scalers'
+    model_dir = '/Users/tianyunhu/Documents/temp/code/Test_app/EMSC_Model/msc_models/dataset_EMSC_big/best_msc_model'  
+    scaler_dir = '/Users/tianyunhu/Documents/temp/code/Test_app/EMSC_Model/msc_models/dataset_EMSC_big/scalers'
     x_scaler_path = os.path.join(scaler_dir, 'x_scaler.save')
     y_scaler_path = os.path.join(scaler_dir, 'y_scaler.save')
     
