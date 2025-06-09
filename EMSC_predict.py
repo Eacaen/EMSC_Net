@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import tensorflow as tf
 import joblib
 import os
-from MSC_train_aliyun import MSC_Sequence
+from EMSC_model import MSC_Sequence
 from EMSC_losses import EMSCLoss, MaskedMSELoss  # 从新模块导入损失函数
 
 # 定义列名映射

@@ -53,7 +53,7 @@ def main():
         sys.exit(1)
     
     # 导入并运行主训练脚本
-    from MSC_train_aliyun import main as train_main
+    from EMSC_train import main as train_main
     train_main()
 
 if __name__ == '__main__':
