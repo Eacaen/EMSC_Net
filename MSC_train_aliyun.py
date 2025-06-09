@@ -1,12 +1,13 @@
 """
 EMSC模型主训练脚本
-使用模块化结构组织训练流程
+使用模块化结构组织训练流程，支持多CPU训练
 """
 
 import os
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras.optimizers import Adam
+from tensorflow.keras import mixed_precision
 
 # 导入自定义模块
 from EMSC_model import build_msc_model
@@ -20,7 +21,58 @@ from EMSC_utils import (load_or_create_model_with_history,
                        print_training_summary)
 from EMSC_losses import EMSCLoss
 
+def setup_cpu_environment():
+    """设置CPU训练环境"""
+    # 获取CPU核心数
+    cpu_count = os.cpu_count()
+    if cpu_count is None:
+        cpu_count = 4  # 默认值
+    
+    # 设置线程数
+    # 保留一半CPU核心给系统和其他进程
+    num_workers = max(1, cpu_count // 2)
+    
+    # 设置TensorFlow线程配置
+    tf.config.threading.set_inter_op_parallelism_threads(num_workers)
+    tf.config.threading.set_intra_op_parallelism_threads(num_workers)
+    
+    # 设置OpenMP线程数（用于NumPy等库）
+    os.environ['OMP_NUM_THREADS'] = str(num_workers)
+    os.environ['MKL_NUM_THREADS'] = str(num_workers)
+    
+    print(f"CPU环境配置完成:")
+    print(f"- 总CPU核心数: {cpu_count}")
+    print(f"- 训练使用线程数: {num_workers}")
+    
+    return num_workers
+
+def get_optimal_batch_size(num_samples, num_workers):
+    """
+    计算CPU训练的最优批处理大小
+    
+    Args:
+        num_samples: 训练样本数量
+        num_workers: 工作线程数
+    
+    Returns:
+        int: 最优批处理大小
+    """
+    # 基础批处理大小
+    base_batch = min(32, num_samples // 100)
+    base_batch = max(8, base_batch)
+    
+    # 根据CPU线程数调整
+    optimal_batch = base_batch * num_workers
+    
+    # 确保是8的倍数（对内存对齐有利）
+    optimal_batch = (optimal_batch // 8) * 8
+    
+    return optimal_batch
+
 def main():
+    # 设置CPU环境
+    num_workers = setup_cpu_environment()
+    
     # 设置TensorFlow的默认数据类型
     tf.keras.backend.set_floatx('float32')
     
@@ -37,7 +89,7 @@ def main():
     # 创建和保存训练配置
     training_config = create_training_config(
         state_dim=args.state_dim,
-        input_dim=6,  # [delta_strain, delta_time, delta_temperature, init_strain, init_time, init_temp]
+        input_dim=6,
         hidden_dim=args.hidden_dim,
         learning_rate=args.learning_rate,
         target_sequence_length=1000,
@@ -78,22 +130,25 @@ def main():
     print(f"训练集大小: {len(X_train)}")
     print(f"验证集大小: {len(X_val)}")
     
+    # 计算最优批处理大小
+    optimal_batch_size = get_optimal_batch_size(len(X_train), num_workers)
+    
     # 创建数据生成器
     print("创建数据生成器...")
-    optimal_batch_size = min(32, len(X_train) // 100)
-    if optimal_batch_size < 8:
-        optimal_batch_size = 8
-    
     train_generator = EMSCDataGenerator(
         X_train, Y_train, init_states_train,
         batch_size=optimal_batch_size,
-        shuffle=True
+        shuffle=True,
+        num_workers=num_workers,  # 使用多线程
+        prefetch_factor=2  # 预加载因子
     )
     
     val_generator = EMSCDataGenerator(
         X_val, Y_val, init_states_val,
         batch_size=optimal_batch_size,
-        shuffle=False
+        shuffle=False,
+        num_workers=num_workers,
+        prefetch_factor=2
     )
     
     # 创建TensorFlow数据集
@@ -101,19 +156,22 @@ def main():
     train_dataset = create_tf_dataset(
         X_train, Y_train, init_states_train,
         batch_size=optimal_batch_size,
-        shuffle=True
+        shuffle=True,
+        num_parallel_calls=tf.data.AUTOTUNE  # 自动优化并行度
     )
     
     val_dataset = create_tf_dataset(
         X_val, Y_val, init_states_val,
         batch_size=optimal_batch_size,
-        shuffle=False
+        shuffle=False,
+        num_parallel_calls=tf.data.AUTOTUNE
     )
     
     print(f"数据加载优化完成:")
     print(f"- 优化后的批处理大小: {optimal_batch_size}")
     print(f"- 训练集批次数: {len(train_generator)}")
     print(f"- 验证集批次数: {len(val_generator)}")
+    print(f"- 数据加载线程数: {num_workers}")
     
     # 加载或创建模型
     epoch_offset = 0
@@ -162,7 +220,9 @@ def main():
     custom_loss = EMSCLoss(state_dim=args.state_dim)
     model.compile(
         optimizer=optimizer,
-        loss=custom_loss
+        loss=custom_loss,
+        # 启用JIT编译以提高CPU性能
+        jit_compile=True
     )
     
     if is_new_model:
@@ -194,14 +254,20 @@ def main():
         print(f"模型保存路径: {dataset_dir}")
         print(f"训练数据大小: {len(X_train)}")
         print(f"验证数据大小: {len(X_val)}")
+        print(f"CPU线程数: {num_workers}")
         
+        # 使用性能优化的训练配置
         history = model.fit(
             train_dataset,
             validation_data=val_dataset,
             epochs=args.epochs,
             initial_epoch=epoch_offset,
             verbose=1,
-            callbacks=[progress_callback, early_stopping]
+            callbacks=[progress_callback, early_stopping],
+            # 启用多进程和多线程
+            use_multiprocessing=True,
+            workers=num_workers,
+            max_queue_size=10
         )
         
         # 训练完成后最终保存

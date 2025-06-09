@@ -4,6 +4,7 @@ EMSC工具模块
 """
 
 import os
+import numpy as np
 import tensorflow as tf
 from tensorflow.keras.models import load_model
 from EMSC_model import MSC_Sequence, build_msc_model

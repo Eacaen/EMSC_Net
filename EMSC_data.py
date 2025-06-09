@@ -17,7 +17,8 @@ class EMSCDataGenerator(Sequence):
     自定义数据生成器，用于高效加载大型数据集
     针对15000条数据的数据集优化参数
     """
-    def __init__(self, X_paths, Y_paths, init_states, batch_size=8, shuffle=True):
+    def __init__(self, X_paths, Y_paths, init_states, batch_size=8, shuffle=True,
+                 num_workers=4, prefetch_factor=2):
         self.X_paths = X_paths
         self.Y_paths = Y_paths
         self.init_states = init_states
@@ -29,7 +30,7 @@ class EMSCDataGenerator(Sequence):
         # 优化缓存参数
         total_samples = len(X_paths)
         self.cache_size = min(int(total_samples * 0.05), 1000)
-        self.preload_queue_size = min(self.cache_size * 2, 2000)
+        self.preload_queue_size = min(self.cache_size * prefetch_factor, 2000)
         
         # 创建数据缓存
         self.cache = {}
@@ -38,7 +39,7 @@ class EMSCDataGenerator(Sequence):
         # 创建预加载线程池
         self.preload_queue = Queue(maxsize=self.preload_queue_size)
         self.stop_preload = threading.Event()
-        self.num_preload_threads = 4
+        self.num_preload_threads = min(num_workers, 8)  # 限制最大线程数
         self.preload_threads = []
         for _ in range(self.num_preload_threads):
             thread = threading.Thread(target=self._preload_data)
@@ -51,6 +52,7 @@ class EMSCDataGenerator(Sequence):
         print(f"- 缓存大小: {self.cache_size}")
         print(f"- 预加载队列大小: {self.preload_queue_size}")
         print(f"- 预加载线程数: {self.num_preload_threads}")
+        print(f"- 预取因子: {prefetch_factor}")
     
     def __len__(self):
         """返回批次数量"""
@@ -132,7 +134,8 @@ class EMSCDataGenerator(Sequence):
         for thread in self.preload_threads:
             thread.join(timeout=1)
 
-def create_tf_dataset(X_paths, Y_paths, init_states, batch_size=8, shuffle=True):
+def create_tf_dataset(X_paths, Y_paths, init_states, batch_size=8, shuffle=True,
+                     num_parallel_calls=tf.data.AUTOTUNE):
     """
     创建TensorFlow数据集，针对15000条数据优化参数
     """
@@ -156,7 +159,13 @@ def create_tf_dataset(X_paths, Y_paths, init_states, batch_size=8, shuffle=True)
         )
     
     dataset = dataset.batch(batch_size)
-    dataset = dataset.prefetch(buffer_size=2)
+    dataset = dataset.prefetch(buffer_size=tf.data.AUTOTUNE)
+    
+    # 并行处理优化
+    dataset = dataset.map(
+        lambda x, y: (x, y),
+        num_parallel_calls=num_parallel_calls
+    )
     
     return dataset
 
