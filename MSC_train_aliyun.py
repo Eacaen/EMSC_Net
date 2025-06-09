@@ -1,5 +1,5 @@
 # Minimal State Cell (MSC) training pipeline with multi-temperature, multi-rate experimental data
-# 输入: [delta_strain, delta_time, temperature]
+# 输入: [delta_strain, delta_time, delta_temperature]
 #     ↓
 # 1. 方向向量计算: d_n = delta_strain / |delta_strain|
 #     ↓
@@ -214,7 +214,7 @@ class MSC_Sequence(tf.keras.layers.Layer):
     
     参数:
     state_dim: 状态向量维度
-    input_dim: 输入特征维度 [delta_strain, delta_time, temperature]
+    input_dim: 输入特征维度 [delta_strain, delta_time, delta_temperature]
     hidden_dim: 内部层维度
     num_internal_layers: 内部层数量
     """
@@ -237,7 +237,7 @@ class MSC_Sequence(tf.keras.layers.Layer):
         
         参数:
         inputs: [delta_seq, state_0]
-            delta_seq: 输入序列 [delta_strain, delta_time, temperature] (batch, seq_len, input_dim)
+            delta_seq: 输入序列 [delta_strain, delta_time, delta_temperature] (batch, seq_len, input_dim)
             state_0: 初始状态 (batch, state_dim)
             
         返回:
@@ -1130,8 +1130,7 @@ if __name__ == '__main__':
     )
     
     # 计算实际要训练的epochs
-    # remaining_epochs = epochs - epoch_offset
-    remaining_epochs = epochs
+    remaining_epochs = epochs  # 直接使用新设置的轮数
 
     if remaining_epochs <= 0:
         print(f"模型已经训练了 {epoch_offset} epochs，达到设定的总epochs {epochs}")
@@ -1139,8 +1138,8 @@ if __name__ == '__main__':
     else:
         print(f"\n开始训练 MSC 模型...")
         print(f"已完成epochs: {epoch_offset}")
-        print(f"剩余epochs: {remaining_epochs}")
-        print(f"总epochs目标: {epochs}")
+        print(f"剩余epochs: {remaining_epochs}")  # 显示新设置的轮数
+        print(f"总epochs目标: {epochs + epoch_offset}")  # 总目标为已训练+新训练
         print(f"批次大小: {batch_size}")
         print(f"保存频率: 每 {save_frequency} epochs")
         print(f"模型保存路径: {save_model_path}")
