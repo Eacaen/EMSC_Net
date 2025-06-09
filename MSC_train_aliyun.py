@@ -24,7 +24,7 @@ from sklearn.model_selection import train_test_split
 from tensorflow.keras.models import Model, load_model
 from tensorflow.keras.layers import Input, Dense, Concatenate, Lambda
 from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.callbacks import History, Callback
+from tensorflow.keras.callbacks import History, Callback, EarlyStopping
 import tensorflow as tf
 import matplotlib.pyplot as plt
 import joblib
@@ -34,6 +34,8 @@ import glob
 import h5py
 from datetime import datetime
 import time
+from EMSC_losses import EMSCLoss, MaskedMSELoss  # 从新模块导入损失函数
+from EMSC_dataset_generator import EMSCDatasetGenerator  # 导入数据集生成器
 
 class MSC_Cell(tf.keras.layers.Layer):
     """
@@ -175,6 +177,7 @@ class MSC_Cell(tf.keras.layers.Layer):
         返回:
         h_n: 新状态向量 (batch, state_dim)
         sigma_n: 输出应力 (batch, 1)
+        gate_params: 门控参数字典
         """
         h_prev, delta_x = inputs
         
@@ -206,7 +209,14 @@ class MSC_Cell(tf.keras.layers.Layer):
         # 8. 输出应力
         sigma_n = self.W_out(h_n)
         
-        return h_n, sigma_n
+        # 9. 收集门控参数
+        gate_params = {
+            'alpha': alpha,
+            'beta': beta,
+            'gamma': gamma
+        }
+        
+        return h_n, sigma_n, gate_params
 
 class MSC_Sequence(tf.keras.layers.Layer):
     """
@@ -251,7 +261,7 @@ class MSC_Sequence(tf.keras.layers.Layer):
             delta_x_t = delta_seq[:, t, :]  # (batch, input_dim)
             
             # 调用 MSC 单元
-            new_state, output = self.msc_cell([state, delta_x_t])
+            new_state, output, gate_params = self.msc_cell([state, delta_x_t])
             
             # 更新输出
             outputs = outputs.write(t, output)
@@ -449,7 +459,7 @@ class MSCProgressCallback(Callback):
             # 尝试加载模型进行验证
             with tf.keras.utils.custom_object_scope({
                 'MSC_Sequence': MSC_Sequence,
-                'MaskedMSELoss': MaskedMSELoss
+                'EMSCLoss': EMSCLoss
             }):
                 test_model = tf.keras.models.load_model(model_path)
                 return True, None
@@ -474,7 +484,7 @@ class MSCProgressCallback(Callback):
             print(f"Saving model to: {final_path}")
             with tf.keras.utils.custom_object_scope({
                 'MSC_Sequence': MSC_Sequence,
-                'MaskedMSELoss': MaskedMSELoss
+                'EMSCLoss': EMSCLoss
             }):
                 tf.keras.models.save_model(
                     model,
@@ -609,38 +619,6 @@ class MSCProgressCallback(Callback):
                   f"Estimated remaining time: {estimated_time/60:.1f}min")
 
 
-class MaskedMSELoss(tf.keras.losses.Loss):
-    """
-    自定义掩码MSE损失类
-    """
-    def __init__(self, reduction=tf.keras.losses.Reduction.AUTO, name='masked_mse_loss'):
-        super().__init__(reduction=reduction, name=name)
-    
-    def call(self, y_true, y_pred, sample_weight=None):
-        # 确保输入是float32类型
-        y_true = tf.cast(y_true, tf.float32)
-        y_pred = tf.cast(y_pred, tf.float32)
-        
-        # 计算MSE
-        mse = tf.keras.losses.mean_squared_error(y_true, y_pred)
-        
-        # 如果提供了sample_weight（掩码），应用它
-        if sample_weight is not None:
-            sample_weight = tf.cast(sample_weight, tf.float32)
-            # 确保掩码形状与预测值匹配
-            sample_weight = tf.reshape(sample_weight, tf.shape(mse))
-            mse = mse * sample_weight
-            # 计算有效样本的平均损失
-            return tf.reduce_sum(mse) / tf.reduce_sum(sample_weight)
-        
-        return tf.reduce_mean(mse)
-    
-    def get_config(self):
-        """获取配置，用于序列化"""
-        base_config = super().get_config()
-        return base_config
-
-
 def create_training_config(state_dim=8, input_dim=6, hidden_dim=32, learning_rate=1e-3, 
                          target_sequence_length=5000, window_size=None, stride=None, 
                          max_subsequences=200, train_test_split_ratio=0.8, random_seed=42,
@@ -764,9 +742,7 @@ def resume_training_from_checkpoint(model_path='./msc_models/', model_name='msc_
                                    best_model_name='best_msc_model', resume_from_best=True,
                                    state_dim=8, input_dim=6, output_dim=1,
                                    hidden_dim=32, num_internal_layers=2):
-    """
-    从SavedModel格式的检查点恢复训练
-    """
+    """从SavedModel格式的检查点恢复训练"""
     # 确定要加载的模型目录
     if resume_from_best:
         model_dir = os.path.join(model_path, best_model_name)
@@ -782,7 +758,7 @@ def resume_training_from_checkpoint(model_path='./msc_models/', model_name='msc_
             print(f"恢复训练，加载模型: {model_dir}")
             with tf.keras.utils.custom_object_scope({
                 'MSC_Sequence': MSC_Sequence,
-                'MaskedMSELoss': MaskedMSELoss
+                'EMSCLoss': EMSCLoss
             }):
                 model = tf.keras.models.load_model(model_dir)
             print("模型加载成功")
@@ -795,7 +771,7 @@ def resume_training_from_checkpoint(model_path='./msc_models/', model_name='msc_
             print(f"尝试加载后备模型: {fallback_dir}")
             with tf.keras.utils.custom_object_scope({
                 'MSC_Sequence': MSC_Sequence,
-                'MaskedMSELoss': MaskedMSELoss
+                'EMSCLoss': EMSCLoss
             }):
                 model = tf.keras.models.load_model(fallback_dir)
             print("后备模型加载成功")
@@ -950,7 +926,27 @@ if __name__ == '__main__':
     hidden_dim = 32
     learning_rate = 1e-3
     target_sequence_length = 1000
+
+   # 路径配置
+    dataset_dir_aliyun = "/mnt/data/msc_models/"
+    dataset_dir_local = "/Users/tianyunhu/Documents/temp/code/Test_app/EMSC_Model/msc_models"  # 模型保存目录
     
+    dataset_name = 'dataset'  # 数据集名称
+
+    dataset_dir_aliyun = dataset_dir_aliyun + '/' + dataset_name
+    dataset_dir_local = dataset_dir_local + '/' + dataset_name
+
+    # 判断当前目录是否为aliyun
+    if os.path.exists(dataset_dir_aliyun):
+        dataset_dir = dataset_dir_aliyun
+    else:
+        dataset_dir = dataset_dir_local
+    
+    
+    model_name = 'msc_model'
+    best_model_name = 'best_msc_model'
+    dataset_path = os.path.join(dataset_dir, f'{dataset_name}.npz')
+
     # 训练参数配置
     import argparse
     
@@ -959,26 +955,23 @@ if __name__ == '__main__':
     parser.add_argument('--epochs', type=int, default=2000, help='训练轮数 (默认: 2000)')
     parser.add_argument('--save_frequency', type=int, default=10, help='模型保存频率，每N个epoch保存一次 (默认: 10)')
     args = parser.parse_args()
+
+    # 添加数据集名称参数到命令行解析器
+    parser.add_argument('--dataset', type=str, default=dataset_name, 
+                       help=f'数据集名称 (默认: {dataset_name})')
+    args = parser.parse_args()
+    
+    # 更新数据集路径
+    dataset_name = args.dataset
+    dataset_path = os.path.join(dataset_dir, f'{dataset_name}.npz')
     
     epochs = args.epochs
     batch_size = 8
     save_frequency = args.save_frequency
     resume_training = True
     
-    # 路径配置
-    data_dir = "/mnt/data/msc_models/"
-    if os.path.exists(data_dir):
-        save_model_path = data_dir
-    else:
-        data_dir = '/Users/tianyunhu/Documents/temp/code/Test_app/EMSC_Model'
-        save_model_path = os.path.join(data_dir, 'msc_models')
-    
-    print(f"save_model_path: {save_model_path}")
-    
-    model_name = 'msc_model'
-    best_model_name = 'best_msc_model'
-    dataset_path = os.path.join(data_dir, 'dataset.npz')
-    
+ 
+  
     # 创建和保存训练配置
     training_config = create_training_config(
         state_dim=state_dim,
@@ -990,86 +983,111 @@ if __name__ == '__main__':
         batch_size=batch_size,
         save_frequency=save_frequency
     )
-    save_training_config(training_config, save_model_path)
+    save_training_config(training_config, dataset_dir)
     
     # 加载数据集
-    dataset_path = data_dir + '/dataset.npz'
-    X_paths, Y_paths = load_dataset_from_npz(dataset_path)
+    print(f"尝试加载数据集: {dataset_path}")
+    X_paths = None
+    Y_paths = None
+    x_scaler = None
+    y_scaler = None
+    
+    if os.path.exists(dataset_path):
+        try:
+            # 加载数据集
+            data = np.load(dataset_path, allow_pickle=True)
+            X_paths = data['X_paths'].tolist()
+            Y_paths = data['Y_paths'].tolist()
+            
+            # 加载标准化器
+            scaler_path = os.path.join(dataset_dir, 'scalers')
+            if os.path.exists(os.path.join(scaler_path, 'x_scaler.save')):
+                x_scaler = joblib.load(os.path.join(scaler_path, 'x_scaler.save'))
+                y_scaler = joblib.load(os.path.join(scaler_path, 'y_scaler.save'))
+            
+            print("成功加载数据集和标准化器")
+        except Exception as e:
+            print(f"加载数据集失败: {e}")
+            raise ValueError("无法加载数据集")
+    else:
+        print(f"数据集文件不存在: {dataset_path}")
+        # 尝试从备用路径加载数据集
+        backup_dataset_path = dataset_dir_local + '/dataset'
+        if os.path.exists(backup_dataset_path):
+            print(f"尝试从备用路径加载数据集: {backup_dataset_path}")
+            try:
+                # 尝试加载数据集
+                data = np.load(backup_dataset_path, allow_pickle=True)
+                X_paths = data['X_paths'].tolist()
+                Y_paths = data['Y_paths'].tolist()
+                
+                # 加载标准化器
+                scaler_path = os.path.join(os.path.dirname(backup_dataset_path), 'scalers')
+                if os.path.exists(os.path.join(scaler_path, 'x_scaler.save')):
+                    x_scaler = joblib.load(os.path.join(scaler_path, 'x_scaler.save'))
+                    y_scaler = joblib.load(os.path.join(scaler_path, 'y_scaler.save'))
+                
+                print("成功从备用路径加载数据集")
+            except Exception as e:
+                print(f"从备用路径加载数据集失败: {e}")
+                raise ValueError("无法加载数据集")
+        else:
+            raise ValueError(f"主数据集和备用数据集都不存在")
 
     if X_paths is None or Y_paths is None:
-        dataset_path = '/Users/tianyunhu/Documents/temp/code/Test_app/EMSC_Model/msc_models/dataset.npz'
-        X_paths, Y_paths = load_dataset_from_npz(dataset_path)
-
-    
-    # 加载标准化器
-    scaler_path = os.path.join(save_model_path, 'scalers')
-    x_scaler_file = os.path.join(scaler_path, 'x_scaler.save')
-    y_scaler_file = os.path.join(scaler_path, 'y_scaler.save')
-    
-    if not (os.path.exists(x_scaler_file) and os.path.exists(y_scaler_file)):
-        raise ValueError("找不到标准化器文件，请确保数据集已正确生成并包含标准化器")
-    
-    print("加载标准化器...")
-    x_scaler = joblib.load(x_scaler_file)
-    y_scaler = joblib.load(y_scaler_file)
-    print("标准化器加载成功")
-    
-    # 使用标准化器转换数据
-    print("标准化数据...")
-    x_scaled = [x_scaler.transform(x) for x in X_paths]
-    y_scaled = [y_scaler.transform(y) for y in Y_paths]
-    print("数据标准化完成")
+        raise ValueError("未能成功加载数据集")
 
     # 准备训练数据
     print("准备训练序列...")
-    X_seq = []
-    Y_seq = []
     init_states = []
-    
-    for x, y in zip(x_scaled, y_scaled):
+    for _ in range(len(X_paths)):
         # 创建初始状态向量
         init_state = np.zeros(state_dim, dtype=np.float32)
-        
-        X_seq.append(x)
-        Y_seq.append(y)
         init_states.append(init_state)
     
     # 转换为numpy数组
-    X_seq = np.array(X_seq, dtype=np.float32)
-    Y_seq = np.array(Y_seq, dtype=np.float32)
     init_states = np.array(init_states, dtype=np.float32)
     print("训练序列准备完成")
 
     # 随机打乱序列
     print("随机打乱训练序列...")
     np.random.seed(training_config['random_seed'])
-    indices = np.random.permutation(len(X_seq))
-    X_seq = X_seq[indices]
-    Y_seq = Y_seq[indices]
+    indices = np.random.permutation(len(X_paths))
+    X_paths = [X_paths[i] for i in indices]
+    Y_paths = [Y_paths[i] for i in indices]
     init_states = init_states[indices]
 
     # 划分训练集和验证集
-    train_size = int(training_config['train_test_split_ratio'] * len(X_seq))
-    X_train = X_seq[:train_size]
-    Y_train = Y_seq[:train_size]
+    train_size = int(training_config['train_test_split_ratio'] * len(X_paths))
+    X_train = X_paths[:train_size]
+    Y_train = Y_paths[:train_size]
     init_states_train = init_states[:train_size]
     
-    X_val = X_seq[train_size:]
-    Y_val = Y_seq[train_size:]
+    X_val = X_paths[train_size:]
+    Y_val = Y_paths[train_size:]
     init_states_val = init_states[train_size:]
+    
+    # 将列表转换为numpy数组
+    print("转换数据格式为numpy数组...")
+    X_train = np.array(X_train, dtype=np.float32)
+    Y_train = np.array(Y_train, dtype=np.float32)
+    X_val = np.array(X_val, dtype=np.float32)
+    Y_val = np.array(Y_val, dtype=np.float32)
     
     print(f"训练集大小: {len(X_train)}")
     print(f"验证集大小: {len(X_val)}")
     print(f"输入维度: {input_dim} [delta_strain, delta_time, delta_temperature]")
     print(f"输出维度: 1 [True_Stress]")
     print(f"状态维度: {state_dim}")
+    print(f"训练数据形状: X_train: {X_train.shape}, Y_train: {Y_train.shape}")
+    print(f"验证数据形状: X_val: {X_val.shape}, Y_val: {Y_val.shape}")
 
     # 决定是恢复训练还是从头开始
     epoch_offset = 0
     if resume_training:
         print("尝试恢复训练...")
         resumed_model, epoch_offset = resume_training_from_checkpoint(
-            model_path=save_model_path,
+            model_path=dataset_dir,
             model_name=model_name,
             best_model_name=best_model_name,
             resume_from_best=True,
@@ -1087,7 +1105,7 @@ if __name__ == '__main__':
         else:
             print("无法恢复训练，将创建新模型")
             model, is_new_model = load_or_create_model_with_history(
-                model_path=save_model_path,
+                model_path=dataset_dir,
                 model_name=model_name,
                 best_model_name=best_model_name,
                 state_dim=state_dim,
@@ -1099,7 +1117,7 @@ if __name__ == '__main__':
     else:
         print("从头开始训练...")
         model, is_new_model = load_or_create_model_with_history(
-            model_path=save_model_path,
+            model_path=dataset_dir,
             model_name=model_name,
             best_model_name=best_model_name,
             state_dim=state_dim,
@@ -1111,9 +1129,10 @@ if __name__ == '__main__':
     
     # 编译模型
     optimizer = Adam(learning_rate)
+    custom_loss = EMSCLoss(state_dim=state_dim)
     model.compile(
         optimizer=optimizer,
-        loss='mse'  # 使用标准MSE损失，因为不再需要掩码
+        loss=custom_loss  # 使用自定义损失函数
     )
     
     if is_new_model:
@@ -1121,12 +1140,21 @@ if __name__ == '__main__':
 
     # 创建自定义回调，设置保存频率
     progress_callback = MSCProgressCallback(
-        save_path=save_model_path,
+        save_path=dataset_dir,
         model_name=model_name,
         best_model_name=best_model_name,
         save_frequency=save_frequency,
         x_scaler=x_scaler,
         y_scaler=y_scaler
+    )
+    
+    # 创建早停回调
+    early_stopping = EarlyStopping(
+        monitor='val_loss',           # 监控验证损失
+        patience=50,                  # 如果验证损失在50个epoch内没有改善，则停止训练
+        min_delta=1e-4,              # 最小改善阈值
+        restore_best_weights=True,    # 恢复最佳权重
+        verbose=1                     # 显示早停信息
     )
     
     # 计算实际要训练的epochs
@@ -1142,14 +1170,15 @@ if __name__ == '__main__':
         print(f"总epochs目标: {epochs + epoch_offset}")  # 总目标为已训练+新训练
         print(f"批次大小: {batch_size}")
         print(f"保存频率: 每 {save_frequency} epochs")
-        print(f"模型保存路径: {save_model_path}")
+        print(f"早停设置: patience={50}, min_delta={1e-4}")
+        print(f"模型保存路径: {dataset_dir}")
         print(f"训练数据大小: {len(X_train)}")
         print(f"验证数据大小: {len(X_val)}")
         
         # 调整initial_epoch参数以支持恢复训练
         initial_epoch = epoch_offset
         
-        # 使用 Keras fit 进行训练，包含自定义回调
+        # 使用 Keras fit 进行训练，包含自定义回调和早停
         history = model.fit(
             x={
                 'delta_input': X_train, 
@@ -1168,7 +1197,7 @@ if __name__ == '__main__':
             initial_epoch=initial_epoch,
             verbose=1,
             shuffle=True,
-            callbacks=[progress_callback]
+            callbacks=[progress_callback, early_stopping]  # 添加早停回调
         )
         
         # 训练完成后最终保存
@@ -1184,12 +1213,12 @@ if __name__ == '__main__':
         print(f"最佳验证损失: {progress_callback.best_val_loss:.6f}")
         print(f"总训练时间: {sum(progress_callback.training_history['epoch_times']):.2f} 秒")
         print(f"平均每epoch时间: {np.mean(progress_callback.training_history['epoch_times']):.2f} 秒")
-        print(f"模型保存路径: {save_model_path}")
-        print(f"最佳模型: {os.path.join(save_model_path, best_model_name)}")
-        print(f"当前模型: {os.path.join(save_model_path, model_name)}")
-        print(f"训练历史: {os.path.join(save_model_path, 'training_history.csv')}")
-        print(f"训练图表: {os.path.join(save_model_path, 'training_history.png')}")
-        print(f"训练配置: {os.path.join(save_model_path, 'training_config.json')}")
+        print(f"模型保存路径: {dataset_dir}")
+        print(f"最佳模型: {os.path.join(dataset_dir, best_model_name)}")
+        print(f"当前模型: {os.path.join(dataset_dir, model_name)}")
+        print(f"训练历史: {os.path.join(dataset_dir, 'training_history.csv')}")
+        print(f"训练图表: {os.path.join(dataset_dir, 'training_history.png')}")
+        print(f"训练配置: {os.path.join(dataset_dir, 'training_config.json')}")
         print("="*60)
 
         # 绘制最终的训练损失图（Keras内置历史）
@@ -1221,8 +1250,8 @@ if __name__ == '__main__':
                 plt.grid(True)
             
             plt.tight_layout()
-            plt.savefig(os.path.join(save_model_path, 'final_training_summary.png'), 
+            plt.savefig(os.path.join(dataset_dir, 'final_training_summary.png'), 
                        dpi=300, bbox_inches='tight')
             plt.close()
             
-            print(f"最终训练总结图保存至: {os.path.join(save_model_path, 'final_training_summary.png')}")
+            print(f"最终训练总结图保存至: {os.path.join(dataset_dir, 'final_training_summary.png')}")

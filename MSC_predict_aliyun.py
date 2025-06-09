@@ -4,7 +4,8 @@ import matplotlib.pyplot as plt
 import tensorflow as tf
 import joblib
 import os
-from MSC_train_aliyun import MSC_Sequence, MaskedMSELoss
+from MSC_train_aliyun import MSC_Sequence
+from EMSC_losses import EMSCLoss, MaskedMSELoss  # 从新模块导入损失函数
 
 # 定义列名映射
 column_mapping = {
@@ -43,13 +44,18 @@ def load_trained_model(model_dir='msc_model',
     """
     try:
         print(f"Loading model from directory: {model_dir}")
-        model = tf.keras.models.load_model(
-            model_dir,
-            custom_objects={
-                'MSC_Sequence': MSC_Sequence,
-                'MaskedMSELoss': MaskedMSELoss
-            }
-        )
+        with tf.keras.utils.custom_object_scope({
+            'MSC_Sequence': MSC_Sequence,
+            'EMSCLoss': EMSCLoss,
+            'MaskedMSELoss': MaskedMSELoss
+        }):
+            model = tf.keras.models.load_model(
+                model_dir,
+                custom_objects={
+                    'MSC_Sequence': MSC_Sequence,
+                    'MaskedMSELoss': MaskedMSELoss
+                }
+            )
         print("Model loaded successfully")
         
         print(f"Loading scalers from: {x_scaler_path} and {y_scaler_path}")
