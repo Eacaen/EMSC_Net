@@ -36,6 +36,9 @@ from datetime import datetime
 import time
 from EMSC_losses import EMSCLoss, MaskedMSELoss  # 从新模块导入损失函数
 from EMSC_dataset_generator import EMSCDatasetGenerator  # 导入数据集生成器
+from tensorflow.keras.utils import Sequence
+import threading
+from queue import Queue
 
 class MSC_Cell(tf.keras.layers.Layer):
     """
@@ -618,6 +621,173 @@ class MSCProgressCallback(Callback):
             print(f"Average epoch time: {avg_epoch_time:.2f}s - "
                   f"Estimated remaining time: {estimated_time/60:.1f}min")
 
+class EMSCDataGenerator(Sequence):
+    """
+    自定义数据生成器，用于高效加载大型数据集
+    针对15000条数据的数据集优化参数
+    """
+    def __init__(self, X_paths, Y_paths, init_states, batch_size=8, shuffle=True):
+        self.X_paths = X_paths
+        self.Y_paths = Y_paths
+        self.init_states = init_states
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.indexes = np.arange(len(X_paths))
+        self.on_epoch_end()
+        
+        # 优化缓存参数
+        total_samples = len(X_paths)
+        # 缓存大小设置为总样本数的5%，但不超过1000条
+        self.cache_size = min(int(total_samples * 0.05), 1000)
+        # 预加载队列大小设置为缓存大小的2倍
+        self.preload_queue_size = min(self.cache_size * 2, 2000)
+        
+        # 创建数据缓存
+        self.cache = {}
+        self.cache_lock = threading.Lock()
+        
+        # 创建预加载线程池
+        self.preload_queue = Queue(maxsize=self.preload_queue_size)
+        self.stop_preload = threading.Event()
+        # 使用多个预加载线程
+        self.num_preload_threads = 4
+        self.preload_threads = []
+        for _ in range(self.num_preload_threads):
+            thread = threading.Thread(target=self._preload_data)
+            thread.daemon = True
+            thread.start()
+            self.preload_threads.append(thread)
+        
+        print(f"数据生成器初始化完成:")
+        print(f"- 总样本数: {total_samples}")
+        print(f"- 缓存大小: {self.cache_size}")
+        print(f"- 预加载队列大小: {self.preload_queue_size}")
+        print(f"- 预加载线程数: {self.num_preload_threads}")
+    
+    def __len__(self):
+        """返回批次数量"""
+        return int(np.ceil(len(self.X_paths) / self.batch_size))
+    
+    def on_epoch_end(self):
+        """每个epoch结束时调用"""
+        if self.shuffle:
+            np.random.shuffle(self.indexes)
+    
+    def _preload_data(self):
+        """预加载数据的线程函数"""
+        while not self.stop_preload.is_set():
+            try:
+                idx = self.preload_queue.get(timeout=1)
+                if idx not in self.cache:
+                    with self.cache_lock:
+                        if len(self.cache) >= self.cache_size:
+                            # 如果缓存满了，删除最早的20%项
+                            num_to_remove = int(self.cache_size * 0.2)
+                            for _ in range(num_to_remove):
+                                if self.cache:
+                                    oldest_key = next(iter(self.cache))
+                                    del self.cache[oldest_key]
+                        # 加载新数据
+                        self.cache[idx] = {
+                            'X': np.array(self.X_paths[idx], dtype=np.float32),
+                            'Y': np.array(self.Y_paths[idx], dtype=np.float32)
+                        }
+                self.preload_queue.task_done()
+            except:
+                continue
+    
+    def __getitem__(self, idx):
+        """获取一个批次的数据"""
+        batch_indexes = self.indexes[idx * self.batch_size:(idx + 1) * self.batch_size]
+        
+        # 准备批次数据
+        batch_X = []
+        batch_Y = []
+        batch_init_states = []
+        
+        # 预加载下一批次的索引
+        next_batch_start = ((idx + 1) * self.batch_size) % len(self.X_paths)
+        next_batch_indices = range(next_batch_start, 
+                                 min(next_batch_start + self.batch_size, len(self.X_paths)))
+        
+        # 将下一批次的索引加入预加载队列
+        for next_idx in next_batch_indices:
+            if next_idx not in self.cache:
+                try:
+                    self.preload_queue.put(next_idx, block=False)
+                except:
+                    pass  # 如果队列满了，跳过预加载
+        
+        for i in batch_indexes:
+            # 尝试从缓存获取数据
+            with self.cache_lock:
+                if i in self.cache:
+                    data = self.cache[i]
+                    X = data['X']
+                    Y = data['Y']
+                else:
+                    # 如果缓存中没有，直接加载
+                    X = np.array(self.X_paths[i], dtype=np.float32)
+                    Y = np.array(self.Y_paths[i], dtype=np.float32)
+                    # 放入缓存
+                    if len(self.cache) < self.cache_size:
+                        self.cache[i] = {'X': X, 'Y': Y}
+            
+            batch_X.append(X)
+            batch_Y.append(Y)
+            batch_init_states.append(self.init_states[i])
+        
+        # 转换为numpy数组
+        batch_X = np.array(batch_X)
+        batch_Y = np.array(batch_Y)
+        batch_init_states = np.array(batch_init_states)
+        
+        return {
+            'delta_input': batch_X,
+            'init_state': batch_init_states
+        }, batch_Y
+    
+    def __del__(self):
+        """清理资源"""
+        self.stop_preload.set()
+        for thread in self.preload_threads:
+            thread.join(timeout=1)
+
+def create_tf_dataset(X_paths, Y_paths, init_states, batch_size=8, shuffle=True):
+    """
+    创建TensorFlow数据集，针对15000条数据优化参数
+    """
+    total_samples = len(X_paths)
+    # 设置合适的shuffle buffer size
+    shuffle_buffer_size = min(total_samples, 5000)  # 使用总样本数的1/3或5000，取较小值
+    
+    # 创建数据集
+    dataset = tf.data.Dataset.from_tensor_slices((
+        {
+            'delta_input': X_paths,
+            'init_state': init_states
+        },
+        Y_paths
+    ))
+    
+    # 设置缓存
+    dataset = dataset.cache()
+    
+    # 设置打乱
+    if shuffle:
+        dataset = dataset.shuffle(
+            buffer_size=shuffle_buffer_size,
+            reshuffle_each_iteration=True
+        )
+    
+    # 设置批处理
+    dataset = dataset.batch(batch_size)
+    
+    # 设置预取
+    # 预取2个批次的数据
+    dataset = dataset.prefetch(buffer_size=2)
+    
+    return dataset
 
 def create_training_config(state_dim=8, input_dim=6, hidden_dim=32, learning_rate=1e-3, 
                          target_sequence_length=5000, window_size=None, stride=None, 
@@ -931,22 +1101,6 @@ if __name__ == '__main__':
     dataset_dir_aliyun = "/mnt/data/msc_models/"
     dataset_dir_local = "/Users/tianyunhu/Documents/temp/code/Test_app/EMSC_Model/msc_models"  # 模型保存目录
     
-    dataset_name = 'dataset'  # 数据集名称
-
-    dataset_dir_aliyun = dataset_dir_aliyun + '/' + dataset_name
-    dataset_dir_local = dataset_dir_local + '/' + dataset_name
-
-    # 判断当前目录是否为aliyun
-    if os.path.exists(dataset_dir_aliyun):
-        dataset_dir = dataset_dir_aliyun
-    else:
-        dataset_dir = dataset_dir_local
-    
-    
-    model_name = 'msc_model'
-    best_model_name = 'best_msc_model'
-    dataset_path = os.path.join(dataset_dir, f'{dataset_name}.npz')
-
     # 训练参数配置
     import argparse
     
@@ -954,15 +1108,23 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='EMSC模型训练参数')
     parser.add_argument('--epochs', type=int, default=2000, help='训练轮数 (默认: 2000)')
     parser.add_argument('--save_frequency', type=int, default=10, help='模型保存频率，每N个epoch保存一次 (默认: 10)')
-    args = parser.parse_args()
-
-    # 添加数据集名称参数到命令行解析器
-    parser.add_argument('--dataset', type=str, default=dataset_name, 
-                       help=f'数据集名称 (默认: {dataset_name})')
+    parser.add_argument('--dataset', type=str, default='dataset', 
+                       help='数据集名称 (默认: dataset)')
     args = parser.parse_args()
     
-    # 更新数据集路径
+    # 更新数据集名称和路径
     dataset_name = args.dataset
+    dataset_dir_aliyun = os.path.join(dataset_dir_aliyun, dataset_name)
+    dataset_dir_local = os.path.join(dataset_dir_local, dataset_name)
+
+    # 判断当前目录是否为aliyun
+    if os.path.exists(dataset_dir_aliyun):
+        dataset_dir = dataset_dir_aliyun
+    else:
+        dataset_dir = dataset_dir_local
+    
+    model_name = 'msc_model'
+    best_model_name = 'best_msc_model'
     dataset_path = os.path.join(dataset_dir, f'{dataset_name}.npz')
     
     epochs = args.epochs
@@ -1067,21 +1229,50 @@ if __name__ == '__main__':
     Y_val = Y_paths[train_size:]
     init_states_val = init_states[train_size:]
     
-    # 将列表转换为numpy数组
-    print("转换数据格式为numpy数组...")
-    X_train = np.array(X_train, dtype=np.float32)
-    Y_train = np.array(Y_train, dtype=np.float32)
-    X_val = np.array(X_val, dtype=np.float32)
-    Y_val = np.array(Y_val, dtype=np.float32)
-    
     print(f"训练集大小: {len(X_train)}")
     print(f"验证集大小: {len(X_val)}")
     print(f"输入维度: {input_dim} [delta_strain, delta_time, delta_temperature]")
     print(f"输出维度: 1 [True_Stress]")
     print(f"状态维度: {state_dim}")
-    print(f"训练数据形状: X_train: {X_train.shape}, Y_train: {Y_train.shape}")
-    print(f"验证数据形状: X_val: {X_val.shape}, Y_val: {Y_val.shape}")
-
+    
+    # 创建数据生成器
+    print("创建数据生成器...")
+    # 根据数据集大小调整批处理大小
+    optimal_batch_size = min(32, len(X_train) // 100)  # 根据数据集大小动态调整批处理大小
+    if optimal_batch_size < 8:
+        optimal_batch_size = 8  # 最小批处理大小为8
+    
+    train_generator = EMSCDataGenerator(
+        X_train, Y_train, init_states_train,
+        batch_size=optimal_batch_size,
+        shuffle=True
+    )
+    
+    val_generator = EMSCDataGenerator(
+        X_val, Y_val, init_states_val,
+        batch_size=optimal_batch_size,
+        shuffle=False
+    )
+    
+    # 创建TensorFlow数据集
+    print("创建TensorFlow数据集...")
+    train_dataset = create_tf_dataset(
+        X_train, Y_train, init_states_train,
+        batch_size=optimal_batch_size,
+        shuffle=True
+    )
+    
+    val_dataset = create_tf_dataset(
+        X_val, Y_val, init_states_val,
+        batch_size=optimal_batch_size,
+        shuffle=False
+    )
+    
+    print(f"数据加载优化完成:")
+    print(f"- 优化后的批处理大小: {optimal_batch_size}")
+    print(f"- 训练集批次数: {len(train_generator)}")
+    print(f"- 验证集批次数: {len(val_generator)}")
+    
     # 决定是恢复训练还是从头开始
     epoch_offset = 0
     if resume_training:
@@ -1168,7 +1359,7 @@ if __name__ == '__main__':
         print(f"已完成epochs: {epoch_offset}")
         print(f"剩余epochs: {remaining_epochs}")  # 显示新设置的轮数
         print(f"总epochs目标: {epochs + epoch_offset}")  # 总目标为已训练+新训练
-        print(f"批次大小: {batch_size}")
+        print(f"批次大小: {optimal_batch_size}")
         print(f"保存频率: 每 {save_frequency} epochs")
         print(f"早停设置: patience={50}, min_delta={1e-4}")
         print(f"模型保存路径: {dataset_dir}")
@@ -1178,26 +1369,14 @@ if __name__ == '__main__':
         # 调整initial_epoch参数以支持恢复训练
         initial_epoch = epoch_offset
         
-        # 使用 Keras fit 进行训练，包含自定义回调和早停
+        # 使用优化后的数据集进行训练
         history = model.fit(
-            x={
-                'delta_input': X_train, 
-                'init_state': init_states_train
-            },
-            y=Y_train,
-            validation_data=(
-                {
-                    'delta_input': X_val,
-                    'init_state': init_states_val
-                },
-                Y_val
-            ),
-            batch_size=batch_size,
+            train_dataset,  # 使用TensorFlow数据集
+            validation_data=val_dataset,
             epochs=epochs,
             initial_epoch=initial_epoch,
             verbose=1,
-            shuffle=True,
-            callbacks=[progress_callback, early_stopping]  # 添加早停回调
+            callbacks=[progress_callback, early_stopping]
         )
         
         # 训练完成后最终保存
