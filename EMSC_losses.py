@@ -16,8 +16,14 @@ class EMSCLoss(tf.keras.losses.Loss):
     state_dim: 状态向量维度
     name: 损失函数名称
     """
-    def __init__(self, state_dim=8, name='emsc_loss'):
-        super().__init__(name=name)
+    def __init__(self, state_dim=8, name='emsc_loss', **kwargs):
+        # 兼容不同TensorFlow版本的构造函数
+        try:
+            # 尝试使用新版本构造函数
+            super().__init__(name=name)
+        except TypeError:
+            # 兼容旧版本
+            super().__init__()
         self.state_dim = state_dim
         self.epoch = tf.Variable(0, trainable=False, dtype=tf.int32)
     
@@ -65,7 +71,11 @@ class EMSCLoss(tf.keras.losses.Loss):
     
     def get_config(self):
         """获取配置，用于序列化"""
-        config = super().get_config()
+        try:
+            config = super().get_config()
+        except AttributeError:
+            # 兼容旧版本TensorFlow
+            config = {}
         config.update({
             'state_dim': self.state_dim
         })
@@ -78,8 +88,14 @@ class MaskedMSELoss(tf.keras.losses.Loss):
     
     用于处理带掩码的序列数据，可以忽略特定位置的损失计算
     """
-    def __init__(self, reduction=tf.keras.losses.Reduction.AUTO, name='masked_mse_loss'):
-        super().__init__(reduction=reduction, name=name)
+    def __init__(self, name='masked_mse_loss', **kwargs):
+        # 兼容不同TensorFlow版本的构造函数
+        try:
+            # 尝试使用reduction参数（新版本）
+            super().__init__(reduction=tf.keras.losses.Reduction.AUTO, name=name)
+        except TypeError:
+            # 如果不支持reduction参数，则使用旧版本的构造函数
+            super().__init__(name=name)
     
     def call(self, y_true, y_pred, sample_weight=None):
         """
@@ -110,5 +126,9 @@ class MaskedMSELoss(tf.keras.losses.Loss):
     
     def get_config(self):
         """获取配置，用于序列化"""
-        base_config = super().get_config()
+        try:
+            base_config = super().get_config()
+        except AttributeError:
+            # 兼容旧版本TensorFlow
+            base_config = {}
         return base_config 

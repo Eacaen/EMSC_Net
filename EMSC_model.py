@@ -115,6 +115,21 @@ class MSC_Cell(tf.keras.layers.Layer):
         }
         
         return h_n, sigma_n, gate_params
+    
+    def get_config(self):
+        """获取配置，用于序列化"""
+        config = super().get_config()
+        config.update({
+            'state_dim': self.state_dim,
+            'input_dim': self.input_dim,
+            'hidden_dim': self.hidden_dim
+        })
+        return config
+    
+    @classmethod
+    def from_config(cls, config):
+        """从配置创建实例"""
+        return cls(**config)
 
 class MSC_Sequence(tf.keras.layers.Layer):
     """
@@ -164,6 +179,23 @@ class MSC_Sequence(tf.keras.layers.Layer):
         )
         
         return tf.transpose(outputs.stack(), [1, 0, 2])
+    
+    def get_config(self):
+        """获取配置，用于序列化"""
+        config = super().get_config()
+        config.update({
+            'state_dim': self.state_dim,
+            'input_dim': self.input_dim,
+            'hidden_dim': self.hidden_dim,
+            'num_internal_layers': self.num_internal_layers,
+            'max_sequence_length': self.max_sequence_length
+        })
+        return config
+    
+    @classmethod
+    def from_config(cls, config):
+        """从配置创建实例"""
+        return cls(**config)
 
 def build_msc_model(state_dim=8, input_dim=6, output_dim=1,
                    hidden_dim=32, num_internal_layers=2, max_sequence_length=10000):

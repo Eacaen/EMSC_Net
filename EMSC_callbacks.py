@@ -188,57 +188,41 @@ class MSCProgressCallback(Callback):
             return False, str(e)
     
     def _safe_save_model(self, model, is_best=False):
-        """安全的模型保存函数"""
+        """安全地保存模型，处理可能的错误"""
         try:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            model_filename = self.best_model_name if is_best else self.model_name
-            model_filename = model_filename.replace('.h5', '')
-            final_path = os.path.join(self.save_path, model_filename)
-            backup_dir = os.path.join(self.save_path, "backups")
+            # 确保保存目录存在
+            if not os.path.exists(self.save_path):
+                os.makedirs(self.save_path)
             
-            os.makedirs(backup_dir, exist_ok=True)
+            # 确定保存路径
+            if is_best:
+                save_path = os.path.join(self.save_path, self.best_model_name)
+            else:
+                save_path = os.path.join(self.save_path, self.model_name)
             
-            print(f"Saving model to: {final_path}")
-            with tf.keras.utils.custom_object_scope({
-                'MSC_Sequence': MSC_Sequence,
-                'EMSCLoss': EMSCLoss
-            }):
-                tf.keras.models.save_model(
-                    model,
-                    final_path,
-                    save_format='tf',
-                    include_optimizer=True
-                )
+            print(f"Saving model to: {save_path}")
             
-            is_valid, error_msg = self._validate_model_file(final_path)
-            if not is_valid:
-                raise ValueError(f"Model validation failed: {error_msg}")
+            # 尝试追踪所有函数
+            try:
+                # 获取模型的所有层
+                for layer in model.layers:
+                    # 确保层的call方法被追踪
+                    if hasattr(layer, 'call'):
+                        layer.call = tf.function(layer.call)
+                
+                # 确保模型的call方法被追踪
+                if hasattr(model, 'call'):
+                    model.call = tf.function(model.call)
+            except Exception as e:
+                print(f"Warning: Failed to trace some functions: {e}")
             
-            if os.path.exists(final_path) and not is_best:
-                backup_name = f"backup_{timestamp}_current_model"
-                backup_path = os.path.join(backup_dir, backup_name)
-                try:
-                    shutil.copytree(final_path, backup_path)
-                    print(f"Created backup: {backup_path}")
-                except Exception as e:
-                    print(f"Warning: Failed to create backup: {e}")
-            
-            print(f"Successfully saved model to: {final_path}")
-            
-            if self.x_scaler is not None and self.y_scaler is not None:
-                scaler_path = os.path.join(self.save_path, 'scalers')
-                os.makedirs(scaler_path, exist_ok=True)
-                try:
-                    joblib.dump(self.x_scaler, os.path.join(scaler_path, 'x_scaler.save'))
-                    joblib.dump(self.y_scaler, os.path.join(scaler_path, 'y_scaler.save'))
-                    print("Scalers saved successfully")
-                except Exception as e:
-                    print(f"Warning: Failed to save scalers: {e}")
-            
-            return final_path
+            # 保存模型
+            model.save(save_path, save_format='tf')
+            print(f"Model saved successfully to: {save_path}")
+            return save_path
             
         except Exception as e:
-            print(f"Error in safe_save_model: {str(e)}")
+            print(f"Error in safe_save_model: {e}")
             return None
     
     def _cleanup_old_backups(self, backup_dir, keep_count=3):

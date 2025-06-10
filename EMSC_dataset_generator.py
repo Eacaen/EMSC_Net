@@ -1,7 +1,7 @@
 import os
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import MinMaxScaler, StandardScaler, RobustScaler, MaxAbsScaler
 import joblib
 from datetime import datetime
 import glob
@@ -39,7 +39,8 @@ class EMSCDatasetGenerator:
     """
     EMSC数据集生成器类，用于处理和生成训练数据
     """
-    def __init__(self, target_sequence_length=1000, window_size=None, stride=None, max_subsequences=200):
+    def __init__(self, target_sequence_length=1000, window_size=None, stride=None, max_subsequences=200,
+                 normalize=True, scaler_type='minmax'):
         """
         初始化数据集生成器
         
@@ -48,15 +49,34 @@ class EMSCDatasetGenerator:
         window_size: 滑动窗口大小，默认为target_sequence_length
         stride: 滑动窗口步长，默认为target_sequence_length//10
         max_subsequences: 每个序列最多生成的子序列数
+        normalize: 是否对数据进行归一化，默认True
+        scaler_type: 归一化方法类型，可选值：
+                    'minmax' - MinMaxScaler (默认)
+                    'standard' - StandardScaler (Z-score标准化)
+                    'robust' - RobustScaler (基于中位数和四分位数的标准化)
+                    'maxabs' - MaxAbsScaler (基于最大绝对值的标准化)
         """
         self.target_sequence_length = target_sequence_length
         self.window_size = window_size if window_size is not None else target_sequence_length
         self.stride = stride if stride is not None else target_sequence_length // 10
         self.max_subsequences = max_subsequences
         
+        # 归一化选项
+        self.normalize = normalize
+        self.scaler_type = scaler_type.lower()
+        
+        # 验证scaler_type
+        valid_scalers = ['minmax', 'standard', 'robust', 'maxabs']
+        if self.scaler_type not in valid_scalers:
+            raise ValueError(f"scaler_type必须是以下之一: {valid_scalers}")
+        
         # 初始化标准化器
-        self.x_scaler = MinMaxScaler()
-        self.y_scaler = MinMaxScaler()
+        if self.normalize:
+            self.x_scaler = self._create_scaler()
+            self.y_scaler = self._create_scaler()
+        else:
+            self.x_scaler = None
+            self.y_scaler = None
         
         # 初始化数据存储
         self.X_paths = []
@@ -86,6 +106,37 @@ class EMSCDatasetGenerator:
             'init_temp': 'init_temp'         # 初始温度
         }
         
+    def _create_scaler(self):
+        """
+        根据scaler_type创建相应的标准化器
+        
+        返回:
+        scaler: 标准化器实例
+        """
+        if self.scaler_type == 'minmax':
+            return MinMaxScaler()
+        elif self.scaler_type == 'standard':
+            return StandardScaler()
+        elif self.scaler_type == 'robust':
+            return RobustScaler()
+        elif self.scaler_type == 'maxabs':
+            return MaxAbsScaler()
+        else:
+            raise ValueError(f"不支持的scaler_type: {self.scaler_type}")
+    
+    def get_scaler_info(self):
+        """
+        获取当前标准化器信息
+        
+        返回:
+        dict: 包含标准化器信息的字典
+        """
+        return {
+            'normalize': self.normalize,
+            'scaler_type': self.scaler_type if self.normalize else None,
+            'scaler_name': self.x_scaler.__class__.__name__ if self.normalize else None
+        }
+
     def get_dataset_paths(self, dataset_name):
         """
         获取数据集相关的所有路径
@@ -261,22 +312,45 @@ class EMSCDatasetGenerator:
         返回:
         bool: 数据是否已标准化
         """
+        if not self.normalize:
+            return True  # 如果不需要归一化，则认为已经"标准化"
+            
         if isinstance(data, list):
             data = np.concatenate(data)
-        # 检查数据是否在[0,1]范围内（MinMaxScaler的默认范围）
-        data_range = np.ptp(data, axis=0)  # 计算每个特征的范围
-        data_min = np.min(data, axis=0)    # 计算每个特征的最小值
-        data_max = np.max(data, axis=0)    # 计算每个特征的最大值
         
-        # 检查是否所有特征都在[0,1]范围内，且范围接近1
-        is_minmax = np.all(data_min >= -1e-6) and np.all(data_max <= 1 + 1e-6) and np.all(data_range >= 0.1)
-        
-        # 检查是否所有特征都接近0均值（StandardScaler的特征）
+        data_min = np.min(data, axis=0)
+        data_max = np.max(data, axis=0)
+        data_range = np.ptp(data, axis=0)
         mean = np.mean(data, axis=0)
         std = np.std(data, axis=0)
-        is_standard = np.all(np.abs(mean) < 1e-6) and np.all(np.abs(std - 1) < 1e-6)
         
-        return is_minmax or is_standard
+        if self.scaler_type == 'minmax':
+            # 检查数据是否在[0,1]范围内
+            is_normalized = (np.all(data_min >= -1e-6) and 
+                           np.all(data_max <= 1 + 1e-6) and 
+                           np.all(data_range >= 0.1))
+        elif self.scaler_type == 'standard':
+            # 检查是否接近0均值1标准差
+            is_normalized = (np.all(np.abs(mean) < 0.1) and 
+                           np.all(np.abs(std - 1) < 0.1))
+        elif self.scaler_type == 'robust':
+            # 对于RobustScaler，检查中位数是否接近0
+            median = np.median(data, axis=0)
+            is_normalized = np.all(np.abs(median) < 0.1)
+        elif self.scaler_type == 'maxabs':
+            # 检查最大绝对值是否接近1
+            max_abs = np.max(np.abs(data), axis=0)
+            is_normalized = np.all(max_abs <= 1 + 1e-6) and np.all(max_abs >= 0.1)
+        else:
+            # 如果是其他类型，尝试通用检查
+            is_minmax = (np.all(data_min >= -1e-6) and 
+                        np.all(data_max <= 1 + 1e-6) and 
+                        np.all(data_range >= 0.1))
+            is_standard = (np.all(np.abs(mean) < 0.1) and 
+                          np.all(np.abs(std - 1) < 0.1))
+            is_normalized = is_minmax or is_standard
+        
+        return is_normalized
     
     def prepare_and_save_dataset(self, dataset_name, force_normalize=False):
         """
@@ -298,39 +372,48 @@ class EMSCDatasetGenerator:
             os.makedirs(paths['dataset_dir'], exist_ok=True)
             os.makedirs(paths['scaler_dir'], exist_ok=True)
             
-            # 检查数据是否已经标准化
-            x_is_normalized = self.is_normalized(self.X_paths)
-            y_is_normalized = self.is_normalized(self.Y_paths)
-            
-            if x_is_normalized and y_is_normalized and not force_normalize:
-                print("数据已经标准化，直接使用...")
-                print("X数据范围:", np.min(self.X_paths[0]), "到", np.max(self.X_paths[0]))
-                print("Y数据范围:", np.min(self.Y_paths[0]), "到", np.max(self.Y_paths[0]))
+            # 处理归一化
+            if not self.normalize:
+                print("归一化已禁用，直接使用原始数据...")
                 x_scaled = self.X_paths
                 y_scaled = self.Y_paths
-            else:
-                print("数据未标准化或需要重新标准化，开始标准化过程...")
                 print("X数据范围:", np.min(self.X_paths[0]), "到", np.max(self.X_paths[0]))
                 print("Y数据范围:", np.min(self.Y_paths[0]), "到", np.max(self.Y_paths[0]))
+            else:
+                # 检查数据是否已经标准化
+                x_is_normalized = self.is_normalized(self.X_paths)
+                y_is_normalized = self.is_normalized(self.Y_paths)
                 
-                # 首先将所有数据合并以进行标准化器拟合
-                all_x = np.vstack(self.X_paths)
-                all_y = np.vstack(self.Y_paths)
-                
-                # 拟合标准化器
-                print("拟合标准化器...")
-                self.x_scaler.fit(all_x)
-                self.y_scaler.fit(all_y)
-                print("标准化器拟合完成")
-                
-                # 标准化数据
-                print("标准化数据...")
-                x_scaled = [self.x_scaler.transform(x) for x in self.X_paths]
-                y_scaled = [self.y_scaler.transform(y) for y in self.Y_paths]
-                print("数据标准化完成")
-                print("标准化后数据范围:")
-                print("X数据范围:", np.min(x_scaled[0]), "到", np.max(x_scaled[0]))
-                print("Y数据范围:", np.min(y_scaled[0]), "到", np.max(y_scaled[0]))
+                if x_is_normalized and y_is_normalized and not force_normalize:
+                    print(f"数据已经使用{self.scaler_type}方法标准化，直接使用...")
+                    print("X数据范围:", np.min(self.X_paths[0]), "到", np.max(self.X_paths[0]))
+                    print("Y数据范围:", np.min(self.Y_paths[0]), "到", np.max(self.Y_paths[0]))
+                    x_scaled = self.X_paths
+                    y_scaled = self.Y_paths
+                else:
+                    print(f"数据未标准化或需要重新标准化，开始使用{self.scaler_type}方法标准化...")
+                    print("原始数据范围:")
+                    print("X数据范围:", np.min(self.X_paths[0]), "到", np.max(self.X_paths[0]))
+                    print("Y数据范围:", np.min(self.Y_paths[0]), "到", np.max(self.Y_paths[0]))
+                    
+                    # 首先将所有数据合并以进行标准化器拟合
+                    all_x = np.vstack(self.X_paths)
+                    all_y = np.vstack(self.Y_paths)
+                    
+                    # 拟合标准化器
+                    print(f"拟合{self.x_scaler.__class__.__name__}标准化器...")
+                    self.x_scaler.fit(all_x)
+                    self.y_scaler.fit(all_y)
+                    print("标准化器拟合完成")
+                    
+                    # 标准化数据
+                    print("标准化数据...")
+                    x_scaled = [self.x_scaler.transform(x) for x in self.X_paths]
+                    y_scaled = [self.y_scaler.transform(y) for y in self.Y_paths]
+                    print("数据标准化完成")
+                    print("标准化后数据范围:")
+                    print("X数据范围:", np.min(x_scaled[0]), "到", np.max(x_scaled[0]))
+                    print("Y数据范围:", np.min(y_scaled[0]), "到", np.max(y_scaled[0]))
             
             # 准备序列和掩码
             print("准备序列和掩码...")
@@ -367,19 +450,24 @@ class EMSCDatasetGenerator:
             print("序列和掩码准备完成")
             
             # 保存数据集和标准化器
-            print("保存数据集和标准化器...")
-            np.savez_compressed(
-                paths['dataset_file'],
-                X_paths=np.array(x_scaled, dtype=object),
-                Y_paths=np.array(y_scaled, dtype=object),
-                save_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            )
+            print("保存数据集...")
+            save_data = {
+                'X_paths': np.array(x_scaled, dtype=object),
+                'Y_paths': np.array(y_scaled, dtype=object),
+                'normalize': self.normalize,
+                'scaler_type': self.scaler_type if self.normalize else None,
+                'save_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+            np.savez_compressed(paths['dataset_file'], **save_data)
             
-            # 保存标准化器
-            joblib.dump(self.x_scaler, paths['x_scaler_file'])
-            joblib.dump(self.y_scaler, paths['y_scaler_file'])
-            
-            print(f"数据集和标准化器已保存至: {paths['dataset_dir']}")
+            # 保存标准化器（如果启用了归一化）
+            if self.normalize and self.x_scaler is not None and self.y_scaler is not None:
+                print("保存标准化器...")
+                joblib.dump(self.x_scaler, paths['x_scaler_file'])
+                joblib.dump(self.y_scaler, paths['y_scaler_file'])
+                print(f"数据集和{self.scaler_type}标准化器已保存至: {paths['dataset_dir']}")
+            else:
+                print(f"数据集已保存至: {paths['dataset_dir']} (未使用归一化)")
             
             return X_seq, Y_seq, masks
             
@@ -412,14 +500,35 @@ class EMSCDatasetGenerator:
             self.X_paths = data['X_paths'].tolist()
             self.Y_paths = data['Y_paths'].tolist()
             
-            # 加载标准化器
-            if os.path.exists(paths['x_scaler_file']) and os.path.exists(paths['y_scaler_file']):
-                print("加载标准化器...")
-                self.x_scaler = joblib.load(paths['x_scaler_file'])
-                self.y_scaler = joblib.load(paths['y_scaler_file'])
-                print("标准化器加载完成")
+            # 加载归一化设置（如果存在）
+            if 'normalize' in data:
+                saved_normalize = bool(data['normalize'])
+                saved_scaler_type = str(data['scaler_type']) if data['scaler_type'] is not None else None
+                
+                print(f"数据集归一化设置: normalize={saved_normalize}, scaler_type={saved_scaler_type}")
+                
+                # 检查当前设置是否与保存的设置一致
+                if self.normalize != saved_normalize:
+                    print(f"警告: 当前归一化设置({self.normalize})与数据集设置({saved_normalize})不一致")
+                if self.normalize and saved_scaler_type and self.scaler_type != saved_scaler_type:
+                    print(f"警告: 当前归一化方法({self.scaler_type})与数据集方法({saved_scaler_type})不一致")
             else:
-                print("警告: 未找到标准化器文件")
+                print("数据集未包含归一化设置信息，使用当前设置")
+            
+            # 加载标准化器（如果启用了归一化且文件存在）
+            if self.normalize:
+                if os.path.exists(paths['x_scaler_file']) and os.path.exists(paths['y_scaler_file']):
+                    print("加载标准化器...")
+                    self.x_scaler = joblib.load(paths['x_scaler_file'])
+                    self.y_scaler = joblib.load(paths['y_scaler_file'])
+                    print(f"标准化器加载完成: {self.x_scaler.__class__.__name__}")
+                else:
+                    print("警告: 启用了归一化但未找到标准化器文件")
+                    # 重新创建标准化器
+                    self.x_scaler = self._create_scaler()
+                    self.y_scaler = self._create_scaler()
+            else:
+                print("归一化已禁用，跳过标准化器加载")
             
             self.dataset_name = dataset_name
             return True
@@ -436,6 +545,9 @@ class EMSCDatasetGenerator:
         print("\n数据集统计信息:")
         print("="*50)
         print(f"序列数量: {len(self.X_paths)}")
+        print(f"归一化设置: {'启用' if self.normalize else '禁用'}")
+        if self.normalize:
+            print(f"归一化方法: {self.scaler_type} ({self.x_scaler.__class__.__name__ if self.x_scaler else 'None'})")
         
         # 打印X_paths和Y_paths的维度信息
         if self.X_paths:
@@ -589,15 +701,224 @@ class EMSCDatasetGenerator:
         except Exception as e:
             print(f"绘制统计图表时出错: {e}")
 
+    @staticmethod
+    def print_usage_examples():
+        """
+        打印使用示例和说明文档
+        """
+        print("\n" + "="*60)
+        print("         EMSCDatasetGenerator 使用说明")
+        print("="*60)
+        
+        print("\n1. 归一化选项说明:")
+        print("   normalize=True/False  : 是否启用数据归一化")
+        print("   scaler_type选项:")
+        print("   - 'minmax'   : MinMaxScaler - 将数据缩放到[0,1]范围")
+        print("   - 'standard' : StandardScaler - Z-score标准化，均值0，标准差1")
+        print("   - 'robust'   : RobustScaler - 基于中位数和四分位数的标准化")
+        print("   - 'maxabs'   : MaxAbsScaler - 基于最大绝对值的标准化")
+        
+        print("\n2. 使用示例:")
+        print("\n   # 示例1: 使用MinMax归一化（推荐用于神经网络）")
+        print("   generator = EMSCDatasetGenerator(")
+        print("       target_sequence_length=1000,")
+        print("       normalize=True,")
+        print("       scaler_type='minmax'")
+        print("   )")
+        
+        print("\n   # 示例2: 使用Standard归一化（适合传统机器学习）")
+        print("   generator = EMSCDatasetGenerator(")
+        print("       target_sequence_length=1000,")
+        print("       normalize=True,")
+        print("       scaler_type='standard'")
+        print("   )")
+        
+        print("\n   # 示例3: 禁用归一化（使用原始数据）")
+        print("   generator = EMSCDatasetGenerator(")
+        print("       target_sequence_length=1000,")
+        print("       normalize=False")
+        print("   )")
+        
+        print("\n3. 归一化方法选择建议:")
+        print("   - 神经网络模型: 推荐使用 'minmax'")
+        print("   - 数据包含异常值: 推荐使用 'robust'")
+        print("   - 传统机器学习: 推荐使用 'standard'")
+        print("   - 数据已预处理: 可选择 normalize=False")
+        
+        print("\n4. 注意事项:")
+        print("   - 数据集会保存归一化设置，加载时会检查一致性")
+        print("   - 标准化器会自动保存和加载")
+        print("   - 可使用 force_normalize=True 强制重新归一化")
+        print("   - 使用 get_scaler_info() 查看当前归一化设置")
+        
+        print("="*60)
+
+    def recover_physical_quantities(self, X_paths):
+        """
+        从增量和初值恢复全物理量序列
+        
+        Args:
+            X_paths: 输入序列列表，每个序列包含 [delta_strain, delta_time, delta_temperature, 
+                    init_strain, init_time, init_temp]
+        
+        Returns:
+            physical_sequences: 恢复后的物理量序列列表，每个序列包含 [strain, time, temperature]
+        """
+        physical_sequences = []
+        
+        for x_seq in X_paths:
+            # 提取增量和初值
+            delta_strain = x_seq[:, 0]
+            delta_time = x_seq[:, 1]
+            delta_temperature = x_seq[:, 2]
+            init_strain = x_seq[0, 3]  # 使用第一个点的初值
+            init_time = x_seq[0, 4]
+            init_temp = x_seq[0, 5]
+            
+            # 计算累积值
+            strain = np.cumsum(delta_strain) + init_strain
+            time = np.cumsum(delta_time) + init_time
+            temperature = np.cumsum(delta_temperature) + init_temp
+            
+            # 组合成物理量序列
+            physical_seq = np.column_stack([strain, time, temperature])
+            physical_sequences.append(physical_seq)
+        
+        return physical_sequences
+
+    def normalize_window_features(self, window_X, window_Y, x_scaler, y_scaler):
+        """
+        使用全局归一化参数对窗口特征进行归一化
+        
+        Args:
+            window_X: 窗口输入数据 (window_size, 6)
+            window_Y: 窗口输出数据 (window_size, 1)
+            x_scaler: X数据的标准化器
+            y_scaler: Y数据的标准化器
+        
+        Returns:
+            normalized_X: 归一化后的窗口输入数据
+            normalized_Y: 归一化后的窗口输出数据
+        """
+        # 分离动态特征和静态特征
+        dynamic_features = window_X[:, :3]  # delta_strain, delta_time, delta_temperature
+        static_features = window_X[:, 3:]   # init_strain, init_time, init_temp
+        
+        # 对动态特征进行归一化
+        normalized_dynamic = x_scaler.transform(dynamic_features)
+        
+        # 对静态特征进行归一化（使用相同的scaler，但只取第一个点）
+        normalized_static = x_scaler.transform(static_features[0:1])
+        normalized_static = np.tile(normalized_static, (len(window_X), 1))
+        
+        # 组合归一化后的特征
+        normalized_X = np.column_stack([normalized_dynamic, normalized_static])
+        
+        # 对输出进行归一化
+        normalized_Y = y_scaler.transform(window_Y)
+        
+        return normalized_X, normalized_Y
+
+    def prepare_window_data(self, physical_sequences, window_size, stride=None, 
+                          x_scaler=None, y_scaler=None):
+        """
+        从物理量序列生成训练窗口数据
+        
+        Args:
+            physical_sequences: 物理量序列列表
+            window_size: 窗口大小
+            stride: 滑动步长，默认为window_size//10
+            x_scaler: X数据的标准化器
+            y_scaler: Y数据的标准化器
+        
+        Returns:
+            windows_X: 窗口输入数据列表
+            windows_Y: 窗口输出数据列表
+        """
+        if stride is None:
+            stride = window_size // 10
+            
+        windows_X = []
+        windows_Y = []
+        
+        for seq_idx, physical_seq in enumerate(physical_sequences):
+            seq_len = len(physical_seq)
+            
+            # 对每个可能的起始位置
+            for start_idx in range(0, seq_len - window_size + 1, stride):
+                end_idx = start_idx + window_size
+                
+                # 提取窗口的物理量数据
+                window_physical = physical_seq[start_idx:end_idx]
+                
+                # 计算窗口内的增量
+                delta_strain = np.zeros(window_size)
+                delta_time = np.zeros(window_size)
+                delta_temperature = np.zeros(window_size)
+                
+                for i in range(1, window_size):
+                    delta_strain[i] = window_physical[i, 0] - window_physical[i-1, 0]
+                    delta_time[i] = window_physical[i, 1] - window_physical[i-1, 1]
+                    delta_temperature[i] = window_physical[i, 2] - window_physical[i-1, 2]
+                
+                # 获取窗口起始点的值作为初始值
+                init_strain = window_physical[0, 0]
+                init_time = window_physical[0, 1]
+                init_temp = window_physical[0, 2]
+                
+                # 构造窗口特征
+                window_X = np.column_stack([
+                    delta_strain,
+                    delta_time,
+                    delta_temperature,
+                    np.full(window_size, init_strain),
+                    np.full(window_size, init_time),
+                    np.full(window_size, init_temp)
+                ])
+                
+                # 如果有标准化器，进行归一化
+                if x_scaler is not None and y_scaler is not None:
+                    window_X, window_Y = self.normalize_window_features(
+                        window_X, window_Y, x_scaler, y_scaler)
+                
+                windows_X.append(window_X)
+                windows_Y.append(window_Y)
+        
+        return windows_X, windows_Y
+
+    def get_scalers(self, dataset_name):
+        """
+        加载数据集对应的标准化器
+        
+        Args:
+            dataset_name: 数据集名称
+        
+        Returns:
+            x_scaler: X数据的标准化器
+            y_scaler: Y数据的标准化器
+        """
+        paths = self.get_dataset_paths(dataset_name)
+        
+        if os.path.exists(paths['x_scaler_file']) and os.path.exists(paths['y_scaler_file']):
+            x_scaler = joblib.load(paths['x_scaler_file'])
+            y_scaler = joblib.load(paths['y_scaler_file'])
+            return x_scaler, y_scaler
+        else:
+            print("警告: 未找到标准化器文件")
+            return None, None
+
 def main():
     """主函数，用于测试数据集生成器"""
+    # 打印使用说明
+    EMSCDatasetGenerator.print_usage_examples()
+    
     # 示例用法
     data_dir = "/Users/tianyunhu/Documents/temp/CTC/PPCC"  # 替换为实际的数据目录
     save_dir = "/Users/tianyunhu/Documents/temp/code/Test_app/EMSC_Model/msc_models"  # 替换为实际的保存目录
-    dataset_name = 'dataset_EMSC_big'
+    dataset_name = 'dataset_EMSC_tt'
 
     # 获取数据文件列表
-    file_list = glob.glob(os.path.join(data_dir, "*.xlsx"))
+    file_list = glob.glob(os.path.join(data_dir, "*.xlsx"))[0:100]
     
     if not file_list:
         print(f"在 {data_dir} 中未找到数据文件")
@@ -608,15 +929,41 @@ def main():
     window_size = 1000
     stride = 500
     max_subsequences = 200
+    
+    # 示例1: 使用MinMax归一化（默认）
     generator = EMSCDatasetGenerator(
         target_sequence_length=target_sequence_length,
         window_size=window_size,
         stride=stride,
-        max_subsequences=max_subsequences
+        max_subsequences=max_subsequences,
+        normalize=False,          # 启用归一化
+        scaler_type='minmax'     # 使用MinMax归一化
     )
+    
+    # 示例2: 使用Standard归一化
+    # generator = EMSCDatasetGenerator(
+    #     target_sequence_length=target_sequence_length,
+    #     window_size=window_size,
+    #     stride=stride,
+    #     max_subsequences=max_subsequences,
+    #     normalize=True,
+    #     scaler_type='standard'   # 使用Standard归一化 (Z-score)
+    # )
+    
+    # 示例3: 禁用归一化
+    # generator = EMSCDatasetGenerator(
+    #     target_sequence_length=target_sequence_length,
+    #     window_size=window_size,
+    #     stride=stride,
+    #     max_subsequences=max_subsequences,
+    #     normalize=False          # 禁用归一化
+    # )
     
     # 生成数据集
     X_paths, Y_paths = generator.load_and_preprocess_data(file_list)
+    
+    # 打印当前归一化设置信息
+    print("\n当前归一化设置:", generator.get_scaler_info())
     
     # 准备训练序列  
     dataset_path = os.path.join(save_dir, dataset_name + '.npz')
@@ -624,6 +971,41 @@ def main():
     
     # 绘制统计图表
     generator.plot_dataset_statistics(dataset_name)
+    
+    # 演示如何测试不同的归一化方法
+    # print("\n" + "="*50)
+    # print("演示不同归一化方法的效果:")
+    # print("="*50)
+    
+    # if X_paths and Y_paths:
+    #     sample_x = X_paths[0][:100]  # 取第一个序列的前100个点作为示例
+    #     sample_y = Y_paths[0][:100]
+        
+    #     scaler_types = ['minmax', 'standard', 'robust', 'maxabs']
+        
+    #     for scaler_type in scaler_types:
+    #         print(f"\n{scaler_type.upper()}标准化效果:")
+    #         temp_generator = EMSCDatasetGenerator(normalize=True, scaler_type=scaler_type)
+            
+    #         # 创建临时标准化器并拟合
+    #         temp_x_scaler = temp_generator._create_scaler()
+    #         temp_y_scaler = temp_generator._create_scaler()
+            
+    #         temp_x_scaler.fit(sample_x)
+    #         temp_y_scaler.fit(sample_y)
+            
+    #         # 转换数据
+    #         scaled_x = temp_x_scaler.transform(sample_x)
+    #         scaled_y = temp_y_scaler.transform(sample_y)
+            
+    #         print(f"  X - 原始范围: [{sample_x.min():.3f}, {sample_x.max():.3f}] -> 标准化后: [{scaled_x.min():.3f}, {scaled_x.max():.3f}]")
+    #         print(f"  Y - 原始范围: [{sample_y.min():.3f}, {sample_y.max():.3f}] -> 标准化后: [{scaled_y.min():.3f}, {scaled_y.max():.3f}]")
+            
+    #         if scaler_type == 'standard':
+    #             print(f"      X均值: {scaled_x.mean():.3f}, 标准差: {scaled_x.std():.3f}")
+    #             print(f"      Y均值: {scaled_y.mean():.3f}, 标准差: {scaled_y.std():.3f}")
+
+
 if __name__ == "__main__":
     main()
 

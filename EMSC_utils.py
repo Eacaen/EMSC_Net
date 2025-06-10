@@ -25,7 +25,10 @@ def load_or_create_model_with_history(model_path='./msc_models/', model_name='ms
         try:
             model = tf.keras.models.load_model(
                 model_file_path,
-                custom_objects={'MSC_Sequence': MSC_Sequence}
+                custom_objects={
+                    'MSC_Sequence': MSC_Sequence,
+                    'EMSCLoss': EMSCLoss
+                }
             )
             print("Successfully loaded existing best model")
             return model, False
@@ -37,7 +40,10 @@ def load_or_create_model_with_history(model_path='./msc_models/', model_name='ms
         try:
             model = tf.keras.models.load_model(
                 fallback_path,
-                custom_objects={'MSC_Sequence': MSC_Sequence}
+                custom_objects={
+                    'MSC_Sequence': MSC_Sequence,
+                    'EMSCLoss': EMSCLoss
+                }
             )
             print("Successfully loaded existing current model")
             return model, False
@@ -131,10 +137,14 @@ def plot_final_training_summary(history, initial_epoch, epochs, progress_callbac
         
         plt.figure(figsize=(12, 6))
         
+        # 使用实际的训练历史长度
+        actual_epochs = len(history.history['loss'])
+        epoch_range = range(initial_epoch + 1, initial_epoch + 1 + actual_epochs)
+        
         plt.subplot(1, 2, 1)
-        plt.plot(range(initial_epoch + 1, epochs + 1), history.history['loss'], 
+        plt.plot(epoch_range, history.history['loss'], 
                 label='Training Loss', color='blue')
-        plt.plot(range(initial_epoch + 1, epochs + 1), history.history['val_loss'], 
+        plt.plot(epoch_range, history.history['val_loss'], 
                 label='Validation Loss', color='red')
         plt.title('Model Loss During Training (Final)')
         plt.xlabel('Epoch')
@@ -144,9 +154,9 @@ def plot_final_training_summary(history, initial_epoch, epochs, progress_callbac
         
         if progress_callback.training_history['epoch_times']:
             plt.subplot(1, 2, 2)
-            recent_times = progress_callback.training_history['epoch_times'][-epochs:]
-            plt.plot(range(initial_epoch + 1, initial_epoch + 1 + len(recent_times)), 
-                    recent_times, label='Epoch Duration', color='green')
+            # 使用实际的训练时间记录
+            recent_times = progress_callback.training_history['epoch_times'][-actual_epochs:]
+            plt.plot(epoch_range, recent_times, label='Epoch Duration', color='green')
             plt.title('Training Time per Epoch')
             plt.xlabel('Epoch')
             plt.ylabel('Time (seconds)')
@@ -159,6 +169,9 @@ def plot_final_training_summary(history, initial_epoch, epochs, progress_callbac
         plt.close()
         
         print(f"最终训练总结图保存至: {os.path.join(dataset_dir, 'final_training_summary.png')}")
+        print(f"实际训练的epochs数: {actual_epochs}")
+        print(f"训练历史长度: {len(history.history['loss'])}")
+        print(f"训练时间记录长度: {len(progress_callback.training_history['epoch_times'])}")
 
 def print_training_summary(progress_callback, dataset_dir, best_model_name, model_name):
     """打印训练总结"""

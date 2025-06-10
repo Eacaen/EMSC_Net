@@ -53,6 +53,7 @@ def load_trained_model(model_dir='msc_model',
                 model_dir,
                 custom_objects={
                     'MSC_Sequence': MSC_Sequence,
+                    'EMSCLoss': EMSCLoss,
                     'MaskedMSELoss': MaskedMSELoss
                 }
             )

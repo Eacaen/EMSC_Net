@@ -134,22 +134,22 @@ def main():
     optimal_batch_size = get_optimal_batch_size(len(X_train), num_workers)
     
     # 创建数据生成器
-    print("创建数据生成器...")
-    train_generator = EMSCDataGenerator(
-        X_train, Y_train, init_states_train,
-        batch_size=optimal_batch_size,
-        shuffle=True,
-        num_workers=num_workers,  # 使用多线程
-        prefetch_factor=2  # 预加载因子
-    )
+    # print("创建数据生成器...")
+    # train_generator = EMSCDataGenerator(
+    #     X_train, Y_train, init_states_train,
+    #     batch_size=optimal_batch_size,
+    #     shuffle=True,
+    #     num_workers=num_workers,  # 使用多线程
+    #     prefetch_factor=2  # 预加载因子
+    # )
     
-    val_generator = EMSCDataGenerator(
-        X_val, Y_val, init_states_val,
-        batch_size=optimal_batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        prefetch_factor=2
-    )
+    # val_generator = EMSCDataGenerator(
+    #     X_val, Y_val, init_states_val,
+    #     batch_size=optimal_batch_size,
+    #     shuffle=False,
+    #     num_workers=num_workers,
+    #     prefetch_factor=2
+    # )
     
     # 创建TensorFlow数据集
     print("创建TensorFlow数据集...")
@@ -169,8 +169,8 @@ def main():
     
     print(f"数据加载优化完成:")
     print(f"- 优化后的批处理大小: {optimal_batch_size}")
-    print(f"- 训练集批次数: {len(train_generator)}")
-    print(f"- 验证集批次数: {len(val_generator)}")
+    # print(f"- 训练集批次数: {len(train_generator)}")
+    # print(f"- 验证集批次数: {len(val_generator)}")
     print(f"- 数据加载线程数: {num_workers}")
     
     # 计算最大序列长度
