@@ -13,7 +13,7 @@ from EMSC_losses import EMSCLoss
 def load_or_create_model_with_history(model_path='./msc_models/', model_name='msc_model', 
                                      best_model_name='best_msc_model',
                                      state_dim=8, input_dim=6, output_dim=1,
-                                     hidden_dim=32, num_internal_layers=2):
+                                     hidden_dim=32, num_internal_layers=2, max_sequence_length=10000):
     """
     加载已存在的SavedModel格式模型或创建新模型
     """
@@ -50,14 +50,15 @@ def load_or_create_model_with_history(model_path='./msc_models/', model_name='ms
         input_dim=input_dim,
         output_dim=output_dim,
         hidden_dim=hidden_dim,
-        num_internal_layers=num_internal_layers
+        num_internal_layers=num_internal_layers,
+        max_sequence_length=max_sequence_length
     )
     return model, True
 
 def resume_training_from_checkpoint(model_path='./msc_models/', model_name='msc_model', 
                                    best_model_name='best_msc_model', resume_from_best=True,
                                    state_dim=8, input_dim=6, output_dim=1,
-                                   hidden_dim=32, num_internal_layers=2):
+                                   hidden_dim=32, num_internal_layers=2, max_sequence_length=10000):
     """从SavedModel格式的检查点恢复训练"""
     if resume_from_best:
         model_dir = os.path.join(model_path, best_model_name)

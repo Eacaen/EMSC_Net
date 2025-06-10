@@ -120,12 +120,14 @@ class MSC_Sequence(tf.keras.layers.Layer):
     """
     EMSC 序列处理层
     """
-    def __init__(self, state_dim=5, input_dim=3, hidden_dim=32, num_internal_layers=2, **kwargs):
+    def __init__(self, state_dim=5, input_dim=3, hidden_dim=32, num_internal_layers=2, 
+                 max_sequence_length=10000, **kwargs):
         super().__init__(**kwargs)
         self.state_dim = state_dim
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.num_internal_layers = num_internal_layers
+        self.max_sequence_length = max_sequence_length
         self.msc_cell = MSC_Cell(
             state_dim=state_dim,
             input_dim=input_dim,
@@ -136,25 +138,35 @@ class MSC_Sequence(tf.keras.layers.Layer):
     def call(self, inputs):
         """处理输入序列"""
         delta_seq, state_0 = inputs
+        sequence_length = tf.shape(delta_seq)[1]
         
         def step_fn(t, state, outputs):
             delta_x_t = delta_seq[:, t, :]
             new_state, output, gate_params = self.msc_cell([state, delta_x_t])
             outputs = outputs.write(t, output)
-            return t + 1, new_state, outputs
+            return [t + 1, new_state, outputs]
         
-        outputs = tf.TensorArray(dtype=tf.float32, size=tf.shape(delta_seq)[1])
+        # 使用固定大小的TensorArray和设置maximum_iterations
+        outputs = tf.TensorArray(
+            dtype=tf.float32, 
+            size=sequence_length,
+            dynamic_size=False,
+            clear_after_read=False
+        )
         
         _, final_state, outputs = tf.while_loop(
-            lambda t, *_: t < tf.shape(delta_seq)[1],
+            lambda t, *_: t < sequence_length,
             step_fn,
-            [tf.constant(0), state_0, outputs]
+            [tf.constant(0), state_0, outputs],
+            maximum_iterations=self.max_sequence_length,
+            parallel_iterations=10,
+            swap_memory=False
         )
         
         return tf.transpose(outputs.stack(), [1, 0, 2])
 
 def build_msc_model(state_dim=8, input_dim=6, output_dim=1,
-                   hidden_dim=32, num_internal_layers=2):
+                   hidden_dim=32, num_internal_layers=2, max_sequence_length=10000):
     """
     构建 EMSC 模型
     
@@ -164,6 +176,7 @@ def build_msc_model(state_dim=8, input_dim=6, output_dim=1,
     output_dim: 输出维度
     hidden_dim: 内部层维度
     num_internal_layers: 内部层数量
+    max_sequence_length: 最大序列长度，用于XLA编译优化
     """
     delta_input = Input(shape=(None, input_dim), name='delta_input')
     init_state = Input(shape=(state_dim,), name='init_state')
@@ -172,7 +185,8 @@ def build_msc_model(state_dim=8, input_dim=6, output_dim=1,
         state_dim=state_dim,
         input_dim=input_dim,
         hidden_dim=hidden_dim,
-        num_internal_layers=num_internal_layers
+        num_internal_layers=num_internal_layers,
+        max_sequence_length=max_sequence_length
     )([delta_input, init_state])
     
     stress_out = Dense(output_dim, name='stress_out')(state_seq)

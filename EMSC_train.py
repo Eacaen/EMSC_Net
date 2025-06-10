@@ -173,6 +173,10 @@ def main():
     print(f"- 验证集批次数: {len(val_generator)}")
     print(f"- 数据加载线程数: {num_workers}")
     
+    # 计算最大序列长度
+    max_seq_length = max(len(x) for x in X_paths)
+    print(f"数据集中最大序列长度: {max_seq_length}")
+    
     # 加载或创建模型
     epoch_offset = 0
     is_new_model = None
@@ -187,7 +191,8 @@ def main():
             input_dim=6,
             output_dim=1,
             hidden_dim=args.hidden_dim,
-            num_internal_layers=2
+            num_internal_layers=2,
+            max_sequence_length=max_seq_length
         )
         
         if model is None:
@@ -200,7 +205,8 @@ def main():
                 input_dim=6,
                 output_dim=1,
                 hidden_dim=args.hidden_dim,
-                num_internal_layers=2
+                num_internal_layers=2,
+                max_sequence_length=max_seq_length
             )
     else:
         print("从头开始训练...")
@@ -212,7 +218,8 @@ def main():
             input_dim=6,
             output_dim=1,
             hidden_dim=args.hidden_dim,
-            num_internal_layers=2
+            num_internal_layers=2,
+            max_sequence_length=max_seq_length
         )
     
     # 编译模型
@@ -221,8 +228,8 @@ def main():
     model.compile(
         optimizer=optimizer,
         loss=custom_loss,
-        # 启用JIT编译以提高CPU性能
-        jit_compile=True
+        # 暂时禁用JIT编译以避免XLA要求固定tensor大小的问题
+        jit_compile=False
     )
     
     if is_new_model:
