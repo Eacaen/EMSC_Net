@@ -15,6 +15,7 @@ from EMSC_data import EMSCDataGenerator, create_tf_dataset, load_dataset_from_np
 from EMSC_callbacks import MSCProgressCallback, create_early_stopping_callback, create_learning_rate_scheduler
 from EMSC_cpu_monitor import create_cpu_monitor_callback
 from EMSC_dynamic_batch import DynamicBatchTrainer, create_dynamic_batch_callback
+from EMSC_cpu_stress_test import comprehensive_performance_test
 from EMSC_config import (create_training_config, save_training_config, 
                         parse_training_args, get_dataset_paths)
 from EMSC_utils import (load_or_create_model_with_history, 
@@ -157,6 +158,12 @@ def main():
     
     # 解析命令行参数
     args = parse_training_args()
+    
+    # 如果用户要求运行CPU诊断，先运行诊断然后退出
+    if args.diagnose_cpu:
+        print("🔍 运行CPU性能诊断...")
+        comprehensive_performance_test()
+        return
     
     # 获取数据集路径
     paths = get_dataset_paths(args.dataset)
@@ -334,11 +341,13 @@ def main():
         verbose=1               # 打印学习率变化
     )
     
-    # 创建CPU监控回调（仅CPU训练模式且用户启用时）
+    # 创建CPU监控回调（仅CPU训练模式且用户启用时，且不与动态批次冲突）
     cpu_monitor = None
-    if num_workers is not None and args.monitor_cpu:
+    if num_workers is not None and args.monitor_cpu and not args.dynamic_batch:
         cpu_monitor = create_cpu_monitor_callback(monitor_interval=30, verbose=True)
         print("已启用CPU使用率监控")
+    elif num_workers is not None and args.monitor_cpu and args.dynamic_batch:
+        print("注意：动态批次调整已包含CPU监控功能，--monitor_cpu将被忽略")
     
     # 准备回调列表
     callbacks = [progress_callback, early_stopping, lr_scheduler]

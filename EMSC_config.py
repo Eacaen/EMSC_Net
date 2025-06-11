@@ -87,6 +87,8 @@ def parse_training_args():
                        help='是否启用动态批次大小调整（根据CPU使用率）')
     parser.add_argument('--target_cpu_usage', type=float, default=75.0,
                        help='动态批次调整的目标CPU使用率 (默认: 75.0%%)')
+    parser.add_argument('--diagnose_cpu', action='store_true', default=False,
+                       help='运行CPU性能诊断测试')
     
     return parser.parse_args()
 

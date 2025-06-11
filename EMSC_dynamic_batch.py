@@ -18,9 +18,9 @@ class DynamicBatchSizeCallback(tf.keras.callbacks.Callback):
                  tolerance=10.0,         # 容忍度
                  min_batch_size=16,      # 最小批次大小
                  max_batch_size=512,     # 最大批次大小
-                 adjustment_factor=1.2,  # 调整因子
-                 monitor_interval=30,    # 监控间隔（秒）
-                 patience=2,             # 连续多少个epoch才调整
+                 adjustment_factor=1.5,  # 调整因子（更激进）
+                 monitor_interval=15,    # 监控间隔（秒）- 更频繁
+                 patience=1,             # 连续多少个epoch才调整 - 更快响应
                  verbose=True):
         """
         Args:
@@ -108,6 +108,19 @@ class DynamicBatchSizeCallback(tf.keras.callbacks.Callback):
             self.low_usage_count = 0
             self.high_usage_count = 0
         
+        # 计算CPU使用率差距，决定调整幅度
+        cpu_gap = abs(recent_usage - self.target_cpu_usage)
+        
+        # 根据差距决定调整因子（超激进的调整策略）
+        if cpu_gap > 30:
+            dynamic_factor = 4.0  # 差距很大时，超激进调整
+        elif cpu_gap > 20:
+            dynamic_factor = 3.0
+        elif cpu_gap > 10:
+            dynamic_factor = 2.5
+        else:
+            dynamic_factor = 2.0
+        
         # 达到patience才调整
         new_batch_size = self.current_batch_size
         adjustment_made = False
@@ -115,7 +128,7 @@ class DynamicBatchSizeCallback(tf.keras.callbacks.Callback):
         if self.low_usage_count >= self.patience and self.current_batch_size < self.max_batch_size:
             # CPU使用率过低，增加批次大小
             new_batch_size = min(
-                int(self.current_batch_size * self.adjustment_factor),
+                int(self.current_batch_size * dynamic_factor),
                 self.max_batch_size
             )
             # 确保是8的倍数
@@ -126,7 +139,7 @@ class DynamicBatchSizeCallback(tf.keras.callbacks.Callback):
         elif self.high_usage_count >= self.patience and self.current_batch_size > self.min_batch_size:
             # CPU使用率过高，减少批次大小
             new_batch_size = max(
-                int(self.current_batch_size / self.adjustment_factor),
+                int(self.current_batch_size / dynamic_factor),
                 self.min_batch_size
             )
             # 确保是8的倍数
@@ -139,7 +152,17 @@ class DynamicBatchSizeCallback(tf.keras.callbacks.Callback):
                 print(f"\n🔄 动态调整批次大小:")
                 print(f"   当前CPU使用率: {recent_usage:.1f}%")
                 print(f"   目标CPU使用率: {self.target_cpu_usage}%")
+                print(f"   使用率差距: {cpu_gap:.1f}%")
+                print(f"   动态调整因子: {dynamic_factor:.1f}x")
                 print(f"   批次大小: {self.current_batch_size} → {new_batch_size}")
+                
+                # 给出进一步的诊断建议
+                if cpu_gap > 30:
+                    print(f"   💡 CPU使用率差距很大，可能存在以下瓶颈:")
+                    print(f"      - 数据I/O等待时间过长")
+                    print(f"      - 网络存储延迟")
+                    print(f"      - 内存带宽限制")
+                    print(f"      - TensorFlow线程配置不当")
             
             # 更新批次大小
             self.current_batch_size = new_batch_size
@@ -153,6 +176,13 @@ class DynamicBatchSizeCallback(tf.keras.callbacks.Callback):
                 except Exception as e:
                     if self.verbose:
                         print(f"   ❌ 数据集重建失败: {e}")
+        
+        # 增加CPU使用率监控显示
+        elif self.verbose and epoch % 5 == 0:  # 每5个epoch显示一次状态
+            print(f"\n📊 CPU使用率状态:")
+            print(f"   当前: {recent_usage:.1f}% | 目标: {self.target_cpu_usage}% | 批次: {self.current_batch_size}")
+            if cpu_gap > 15:
+                print(f"   ⚠️  使用率偏差较大 ({cpu_gap:.1f}%)，继续监控...")
     
     def _monitor_cpu(self):
         """CPU监控主循环"""
