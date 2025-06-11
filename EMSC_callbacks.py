@@ -340,6 +340,9 @@ class LearningRateScheduler(tf.keras.callbacks.Callback):
         
     def on_epoch_end(self, epoch, logs=None):
         """每个epoch结束时更新学习率"""
+        # 初始化new_lr为当前学习率
+        new_lr = self.current_lr
+        
         if self.decay_type == 'exponential':
             # 指数衰减
             new_lr = self.initial_learning_rate * (self.decay_rate ** (epoch / self.decay_steps))
@@ -351,6 +354,10 @@ class LearningRateScheduler(tf.keras.callbacks.Callback):
         elif self.decay_type == 'validation':
             # 基于验证损失的动态调整
             current_val_loss = logs.get('val_loss')
+            if current_val_loss is None:
+                print("Warning: val_loss not found in logs, skipping learning rate adjustment")
+                return
+                
             if current_val_loss < self.best_val_loss:
                 self.best_val_loss = current_val_loss
                 self.wait = 0
@@ -359,8 +366,6 @@ class LearningRateScheduler(tf.keras.callbacks.Callback):
                 if self.wait >= self.patience:
                     new_lr = max(self.current_lr * self.factor, self.min_learning_rate)
                     self.wait = 0
-                else:
-                    new_lr = self.current_lr
         else:
             raise ValueError(f"Unsupported decay type: {self.decay_type}")
         
