@@ -68,7 +68,11 @@ class EMSCLoss(tf.keras.losses.Loss):
         
         # 5. 计算动态正则化权重
         # 1000个epoch内从1e-3降到1e-6，之后恒为1e-6
-        omega = tf.maximum(1e-6, 1e-3 - 9.99e-7 * tf.cast(self.epoch, self.emsc_compute_dtype))
+        omega = tf.maximum(
+            tf.cast(1e-6, self.emsc_compute_dtype), 
+            tf.cast(1e-3, self.emsc_compute_dtype) - 
+            tf.cast(9.99e-7, self.emsc_compute_dtype) * tf.cast(self.epoch, self.emsc_compute_dtype)
+        )
         
         # 6. 计算总损失
         total_loss = mse_loss + omega * reg_loss
@@ -105,6 +109,11 @@ class MaskedMSELoss(tf.keras.losses.Loss):
         except TypeError:
             # 如果不支持reduction参数，则使用旧版本的构造函数
             super().__init__(name=name)
+        
+        # 获取当前策略的dtype（使用完全自定义的属性名避免冲突）
+        mixed_precision_policy = tf.keras.mixed_precision.global_policy()
+        self.emsc_compute_dtype = mixed_precision_policy.compute_dtype
+        self.emsc_variable_dtype = mixed_precision_policy.variable_dtype
     
     def call(self, y_true, y_pred, sample_weight=None):
         """
@@ -115,16 +124,16 @@ class MaskedMSELoss(tf.keras.losses.Loss):
         y_pred: 预测值
         sample_weight: 样本权重（掩码）
         """
-        # 确保输入是float32类型
-        y_true = tf.cast(y_true, tf.float32)
-        y_pred = tf.cast(y_pred, tf.float32)
+        # 确保输入使用正确的dtype
+        y_true = tf.cast(y_true, self.emsc_compute_dtype)
+        y_pred = tf.cast(y_pred, self.emsc_compute_dtype)
         
         # 计算MSE
         mse = tf.keras.losses.mean_squared_error(y_true, y_pred)
         
         # 如果提供了sample_weight（掩码），应用它
         if sample_weight is not None:
-            sample_weight = tf.cast(sample_weight, tf.float32)
+            sample_weight = tf.cast(sample_weight, self.emsc_compute_dtype)
             # 确保掩码形状与预测值匹配
             sample_weight = tf.reshape(sample_weight, tf.shape(mse))
             mse = mse * sample_weight

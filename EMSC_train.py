@@ -79,14 +79,25 @@ def get_optimal_batch_size(num_samples: int, num_workers: Optional[int]) -> int:
     return suggested_batch
 
 def main():
-    # 设置TensorFlow的默认数据类型为float32
-    tf.keras.backend.set_floatx('float32')
-    
     # 检查并配置环境
     num_workers = check_environment()
     
     # 获取云环境配置
     cloud_config = get_cloud_config()
+    
+    # 根据云配置设置混合精度策略
+    if cloud_config.is_mixed_precision_enabled():
+        try:
+            policy = tf.keras.mixed_precision.Policy('mixed_float16')
+            tf.keras.mixed_precision.set_global_policy(policy)
+            print("启用混合精度训练 (mixed_float16)")
+        except Exception as e:
+            print(f"启用混合精度失败，回退到float32: {e}")
+            tf.keras.backend.set_floatx('float32')
+    else:
+        # 如果云配置禁用混合精度，则使用float32
+        tf.keras.backend.set_floatx('float32')
+        print("使用float32精度训练")
     
     # 解析命令行参数
     args = parse_training_args()
@@ -234,6 +245,12 @@ def main():
     
     # 编译模型
     optimizer = Adam(args.learning_rate)
+    
+    # 如果启用混合精度，使用LossScaleOptimizer包装优化器
+    if cloud_config.is_mixed_precision_enabled():
+        optimizer = tf.keras.mixed_precision.LossScaleOptimizer(optimizer)
+        print("使用LossScaleOptimizer包装优化器以支持混合精度训练")
+    
     custom_loss = EMSCLoss(state_dim=args.state_dim)
     model.compile(
         optimizer=optimizer,

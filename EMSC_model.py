@@ -52,25 +52,40 @@ class MSC_Cell(tf.keras.layers.Layer):
     
     def calc_direction_vec(self, delta_features):
         """计算增量方向向量"""
+        # 确保输入使用正确的数据类型
+        delta_features = tf.cast(delta_features, self.emsc_compute_dtype)
+        
         delta_norm = tf.sqrt(tf.reduce_sum(tf.square(delta_features), axis=-1, keepdims=True))
-        delta_norm = tf.maximum(delta_norm, 1e-7)  # 避免除零
+        # 确保常数使用正确的数据类型
+        epsilon = tf.cast(1e-7, self.emsc_compute_dtype)
+        delta_norm = tf.maximum(delta_norm, epsilon)  # 避免除零
         direction = delta_features / delta_norm
         return direction
     
     def process_internal_layers(self, l_0):
         """处理内部层 (tanh∘tanh 逐层)"""
-        l = l_0
+        l = tf.cast(l_0, self.emsc_compute_dtype)
         for W_a, W_b in self.internal_layers:
             l_a = W_a(l)
             l_b = W_b(l)
+            # 确保乘法操作的数据类型一致
+            l_a = tf.cast(l_a, self.emsc_compute_dtype)
+            l_b = tf.cast(l_b, self.emsc_compute_dtype)
             l = l_a * l_b
         return l
     
     def calc_gate_params(self, l_d):
         """计算门控参数 (exp激活确保非负)"""
+        l_d = tf.cast(l_d, self.emsc_compute_dtype)
         alpha = tf.exp(self.W_alpha(l_d))  # 应变增量门控
         beta = tf.exp(self.W_beta(l_d))    # 时间增量门控
         gamma = tf.exp(self.W_gamma(l_d))  # 温度门控
+        
+        # 确保返回值类型正确
+        alpha = tf.cast(alpha, self.emsc_compute_dtype)
+        beta = tf.cast(beta, self.emsc_compute_dtype)
+        gamma = tf.cast(gamma, self.emsc_compute_dtype)
+        
         return alpha, beta, gamma
     
     def calc_update_gate(self, alpha, beta, gamma, delta_features):
@@ -79,13 +94,27 @@ class MSC_Cell(tf.keras.layers.Layer):
         delta_time = delta_features[..., 1:2]
         delta_temperature = delta_features[..., 2:3]
         
-        z = 1 - tf.exp(-alpha * tf.abs(delta_strain) - 
-                       beta * delta_time - 
-                       gamma * tf.abs(delta_temperature))
+        # 确保所有计算使用一致的数据类型
+        alpha = tf.cast(alpha, self.emsc_compute_dtype)
+        beta = tf.cast(beta, self.emsc_compute_dtype)
+        gamma = tf.cast(gamma, self.emsc_compute_dtype)
+        delta_strain = tf.cast(delta_strain, self.emsc_compute_dtype)
+        delta_time = tf.cast(delta_time, self.emsc_compute_dtype)
+        delta_temperature = tf.cast(delta_temperature, self.emsc_compute_dtype)
+        
+        # 确保常数也使用正确的数据类型
+        one = tf.cast(1.0, self.emsc_compute_dtype)
+        
+        z = one - tf.exp(-alpha * tf.abs(delta_strain) - 
+                         beta * delta_time - 
+                         gamma * tf.abs(delta_temperature))
         return z
     
     def reconstruct_temp_seq(self, delta_x):
         """重建温度序列"""
+        # 确保输入使用正确的数据类型
+        delta_x = tf.cast(delta_x, self.emsc_compute_dtype)
+        
         delta_features = delta_x[..., :3]
         init_features = delta_x[..., 3:]
         
@@ -101,18 +130,38 @@ class MSC_Cell(tf.keras.layers.Layer):
         """前向传播"""
         h_prev, delta_x = inputs
         
+        # 确保所有输入使用正确的数据类型
+        h_prev = tf.cast(h_prev, self.emsc_compute_dtype)
+        delta_x = tf.cast(delta_x, self.emsc_compute_dtype)
+        
         delta_features = delta_x[..., :3]
         temp_seq = self.reconstruct_temp_seq(delta_x)
         direction = self.calc_direction_vec(delta_features)
+        
+        # 确保所有用于concat的tensor使用相同的数据类型
+        h_prev = tf.cast(h_prev, self.emsc_compute_dtype)
+        temp_seq = tf.cast(temp_seq, self.emsc_compute_dtype)
+        direction = tf.cast(direction, self.emsc_compute_dtype)
         
         l_0 = tf.concat([h_prev, temp_seq, direction], axis=-1)
         l_d = self.process_internal_layers(l_0)
         
         alpha, beta, gamma = self.calc_gate_params(l_d)
+        
+        # 确保 W_c 层的输入和输出类型正确
+        l_d = tf.cast(l_d, self.emsc_compute_dtype)
         c_n = tf.tanh(self.W_c(l_d))
+        c_n = tf.cast(c_n, self.emsc_compute_dtype)
+        
         z = self.calc_update_gate(alpha, beta, gamma, delta_features)
         
-        h_n = (1 - z) * h_prev + z * c_n
+        # 确保所有计算变量使用正确的数据类型
+        one = tf.cast(1.0, self.emsc_compute_dtype)
+        c_n = tf.cast(c_n, self.emsc_compute_dtype)
+        z = tf.cast(z, self.emsc_compute_dtype)
+        h_prev = tf.cast(h_prev, self.emsc_compute_dtype)
+        
+        h_n = (one - z) * h_prev + z * c_n
         sigma_n = self.W_out(h_n)
         
         gate_params = {
@@ -166,11 +215,21 @@ class MSC_Sequence(tf.keras.layers.Layer):
     def call(self, inputs):
         """处理输入序列"""
         delta_seq, state_0 = inputs
+        
+        # 确保输入使用正确的数据类型
+        delta_seq = tf.cast(delta_seq, self.emsc_compute_dtype)
+        state_0 = tf.cast(state_0, self.emsc_compute_dtype)
+        
         sequence_length = tf.shape(delta_seq)[1]
         
         def step_fn(t, state, outputs):
             delta_x_t = delta_seq[:, t, :]
             new_state, output, gate_params = self.msc_cell([state, delta_x_t])
+            
+            # 确保所有输出使用正确的数据类型
+            output = tf.cast(output, self.emsc_compute_dtype)
+            new_state = tf.cast(new_state, self.emsc_compute_dtype)
+            
             outputs = outputs.write(t, output)
             return [t + 1, new_state, outputs]
         
