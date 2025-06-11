@@ -15,7 +15,11 @@ from EMSC_data import EMSCDataGenerator, create_tf_dataset, load_dataset_from_np
 from EMSC_callbacks import MSCProgressCallback, create_early_stopping_callback, create_learning_rate_scheduler
 from EMSC_cpu_monitor import create_cpu_monitor_callback
 from EMSC_dynamic_batch import DynamicBatchTrainer, create_dynamic_batch_callback
-from EMSC_cpu_stress_test import comprehensive_performance_test
+try:
+    from EMSC_cloud_io_optimizer import CloudIOOptimizer, create_cloud_optimized_training_config
+    CLOUD_OPTIMIZER_AVAILABLE = True
+except ImportError:
+    CLOUD_OPTIMIZER_AVAILABLE = False
 from EMSC_config import (create_training_config, save_training_config, 
                         parse_training_args, get_dataset_paths)
 from EMSC_utils import (load_or_create_model_with_history, 
@@ -159,11 +163,20 @@ def main():
     # 解析命令行参数
     args = parse_training_args()
     
-    # 如果用户要求运行CPU诊断，先运行诊断然后退出
-    if args.diagnose_cpu:
-        print("🔍 运行CPU性能诊断...")
-        comprehensive_performance_test()
-        return
+    # 云环境I/O优化
+    cloud_optimizer = None
+    if args.cloud_io_optimize:
+        if CLOUD_OPTIMIZER_AVAILABLE:
+            print("🌥️  启用阿里云I/O优化...")
+            cloud_optimizer = CloudIOOptimizer(
+                io_buffer_size=128,      # 更大的I/O缓冲
+                prefetch_factor=16,      # 激进预取
+                io_threads=min(32, num_workers * 2) if num_workers else 16,
+                memory_cache_size=1024   # 1GB内存缓存
+            )
+            cloud_optimizer.optimize_cloud_environment()
+        else:
+            print("⚠️  云优化模块不可用，跳过优化")
     
     # 获取数据集路径
     paths = get_dataset_paths(args.dataset)
@@ -227,31 +240,46 @@ def main():
         batch_size = get_optimal_batch_size(len(X_train), num_workers)
         print(f"未指定batch_size，使用自动计算值: {batch_size}")
     
-    # 创建TensorFlow数据集 - 针对CPU优化数据加载并行度
+    # 创建TensorFlow数据集 - 针对云环境优化
     print("创建TensorFlow数据集...")
     
-    # 为CPU训练优化数据并行度
-    if num_workers is not None:  # CPU模式
-        data_parallel_calls = min(num_workers, 16)  # 限制最大并行度避免过度竞争
-        prefetch_buffer = min(batch_size * 4, 64)  # 预取缓冲区
-        print(f"CPU优化: 数据并行度={data_parallel_calls}, 预取缓冲={prefetch_buffer}")
-    else:  # GPU模式
-        data_parallel_calls = tf.data.AUTOTUNE
-        prefetch_buffer = tf.data.AUTOTUNE
-    
-    train_dataset = create_tf_dataset(
-        X_train, Y_train, init_states_train,
-        batch_size=batch_size,
-        shuffle=True,
-        num_parallel_calls=data_parallel_calls
-    ).prefetch(prefetch_buffer)
-    
-    val_dataset = create_tf_dataset(
-        X_val, Y_val, init_states_val,
-        batch_size=batch_size,
-        shuffle=False,
-        num_parallel_calls=data_parallel_calls
-    ).prefetch(prefetch_buffer)
+    if cloud_optimizer:
+        # 使用云优化的数据集创建
+        print("🌥️  使用云环境优化数据集...")
+        train_dataset = cloud_optimizer.create_optimized_dataset(
+            X_train, Y_train, init_states_train, batch_size
+        )
+        val_dataset = cloud_optimizer.create_optimized_dataset(
+            X_val, Y_val, init_states_val, batch_size
+        )
+        
+        # 云环境性能监控
+        from EMSC_cloud_io_optimizer import monitor_cloud_performance
+        monitor_cloud_performance()
+        
+    else:
+        # 标准数据集创建 - 针对CPU优化数据加载并行度
+        if num_workers is not None:  # CPU模式
+            data_parallel_calls = min(num_workers, 16)  # 限制最大并行度避免过度竞争
+            prefetch_buffer = min(batch_size * 4, 64)  # 预取缓冲区
+            print(f"CPU优化: 数据并行度={data_parallel_calls}, 预取缓冲={prefetch_buffer}")
+        else:  # GPU模式
+            data_parallel_calls = tf.data.AUTOTUNE
+            prefetch_buffer = tf.data.AUTOTUNE
+        
+        train_dataset = create_tf_dataset(
+            X_train, Y_train, init_states_train,
+            batch_size=batch_size,
+            shuffle=True,
+            num_parallel_calls=data_parallel_calls
+        ).prefetch(prefetch_buffer)
+        
+        val_dataset = create_tf_dataset(
+            X_val, Y_val, init_states_val,
+            batch_size=batch_size,
+            shuffle=False,
+            num_parallel_calls=data_parallel_calls
+        ).prefetch(prefetch_buffer)
     
     print(f"数据加载配置:")
     print(f"- 最终使用的批处理大小: {batch_size}")

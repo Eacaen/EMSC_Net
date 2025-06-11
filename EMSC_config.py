@@ -89,6 +89,8 @@ def parse_training_args():
                        help='动态批次调整的目标CPU使用率 (默认: 75.0%%)')
     parser.add_argument('--diagnose_cpu', action='store_true', default=False,
                        help='运行CPU性能诊断测试')
+    parser.add_argument('--cloud_io_optimize', action='store_true', default=False,
+                       help='启用阿里云I/O优化（解决CPU使用率低问题）')
     
     return parser.parse_args()
 
