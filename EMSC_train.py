@@ -8,6 +8,7 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras import mixed_precision
+from typing import Optional
 
 # 导入自定义模块
 from EMSC_model import build_msc_model
@@ -20,6 +21,7 @@ from EMSC_utils import (load_or_create_model_with_history,
                        plot_final_training_summary,
                        print_training_summary)
 from EMSC_losses import EMSCLoss
+from EMSC_cloud_config import get_cloud_config  # 导入云配置模块
 
 def check_environment():
     """检查并配置训练环境，优先使用GPU，回退到CPU"""
@@ -27,97 +29,64 @@ def check_environment():
     print(f"TensorFlow版本: {tf.__version__}")
     print(f"当前工作目录: {os.getcwd()}")
     
+    # 获取云环境配置
+    cloud_config = get_cloud_config()
+    
     # 检查GPU可用性
     gpus = tf.config.list_physical_devices('GPU')
     if gpus:
         print(f"发现 {len(gpus)} 个GPU设备:")
         for gpu in gpus:
             print(f"- {gpu}")
-            # 配置GPU内存增长
-            try:
-                tf.config.experimental.set_memory_growth(gpu, True)
-                print(f"已为 {gpu} 启用内存增长")
-            except RuntimeError as e:
-                print(f"配置GPU内存增长时出错: {e}")
-        
-        # 设置GPU为默认设备
-        try:
-            tf.config.set_visible_devices(gpus[0], 'GPU')
-            print(f"使用GPU设备: {gpus[0]}")
-            return None  # 使用GPU时不需要返回worker数
-        except RuntimeError as e:
-            print(f"设置GPU设备时出错: {e}")
+            # GPU内存增长已在云配置中设置
+        return None  # 使用GPU时不需要返回worker数
     
     # 如果没有GPU或GPU设置失败，配置CPU环境
     print("未发现GPU设备或GPU设置失败，将使用CPU训练")
     
-    # 获取CPU核心数
-    cpu_count = os.cpu_count()
-    if cpu_count is None:
-        cpu_count = 4  # 默认值
-    
-    # 设置线程数
-    # 保留CPU核心给系统和其他进程
-    num_workers = max(1, cpu_count - 1)  # 保留1个CPU核心给系统和其他进程
-    
-    # 设置TensorFlow线程配置
-    tf.config.threading.set_inter_op_parallelism_threads(num_workers)
-    tf.config.threading.set_intra_op_parallelism_threads(num_workers)
-    
-    # 设置OpenMP线程数（用于NumPy等库）
-    os.environ['OMP_NUM_THREADS'] = str(num_workers)
-    os.environ['MKL_NUM_THREADS'] = str(num_workers)
+    # 获取CPU核心数（已在云配置中获取）
+    cpu_info = cloud_config.cpu_info
+    num_workers = min(cpu_info['physical_cores'], 8)  # 限制最大线程数
     
     print(f"CPU环境配置完成:")
-    print(f"- 总CPU核心数: {cpu_count}")
+    print(f"- 总CPU核心数: {cpu_info['count']}")
+    print(f"- 物理核心数: {cpu_info['physical_cores']}")
     print(f"- 训练使用线程数: {num_workers}")
-    
-    # 检查内存使用情况
-    try:
-        import psutil
-        memory = psutil.virtual_memory()
-        print(f"\n系统内存信息:")
-        print(f"总内存: {memory.total / (1024**3):.1f} GB")
-        print(f"可用内存: {memory.available / (1024**3):.1f} GB")
-        print(f"内存使用率: {memory.percent}%")
-    except ImportError:
-        print("未安装psutil，跳过内存检查")
     
     return num_workers
 
-def get_optimal_batch_size(num_samples, num_workers):
+def get_optimal_batch_size(num_samples: int, num_workers: Optional[int]) -> int:
     """
-    计算最优批处理大小
+    计算建议的批处理大小
     
     Args:
         num_samples: 训练样本数量
         num_workers: 工作线程数（CPU模式）或None（GPU模式）
     
     Returns:
-        int: 最优批处理大小
+        int: 建议的批处理大小
     """
-    if num_workers is None:  # GPU模式
-        # GPU模式下使用较大的批处理大小
-        return min(128, num_samples // 50)
+    # 获取云环境配置
+    cloud_config = get_cloud_config()
     
-    # CPU模式下的批处理大小计算
-    base_batch = min(32, num_samples // 100)
-    base_batch = max(8, base_batch)
+    # 使用云配置中的batch_size
+    suggested_batch = cloud_config.get_batch_size()
     
-    # 根据CPU线程数调整
-    optimal_batch = base_batch * num_workers
+    # 根据样本数量调整
+    if num_samples < suggested_batch * 2:
+        suggested_batch = max(1, num_samples // 2)
     
-    # 确保是8的倍数（对内存对齐有利）
-    optimal_batch = (optimal_batch // 8) * 8
-    
-    return optimal_batch
+    return suggested_batch
 
 def main():
+    # 设置TensorFlow的默认数据类型为float32
+    tf.keras.backend.set_floatx('float32')
+    
     # 检查并配置环境
     num_workers = check_environment()
     
-    # 设置TensorFlow的默认数据类型
-    tf.keras.backend.set_floatx('float32')
+    # 获取云环境配置
+    cloud_config = get_cloud_config()
     
     # 解析命令行参数
     args = parse_training_args()
@@ -173,28 +142,46 @@ def main():
     print(f"训练集大小: {len(X_train)}")
     print(f"验证集大小: {len(X_val)}")
     
-    # 计算最优批处理大小
-    optimal_batch_size = get_optimal_batch_size(len(X_train), num_workers)
+    # 获取数据加载配置
+    data_config = cloud_config.get_data_config()
+    
+    # 计算建议的批处理大小
+    suggested_batch_size = get_optimal_batch_size(len(X_train), num_workers)
+    
+    # 使用用户指定的batch_size，如果未指定则使用建议值
+    if args.batch_size is None:
+        batch_size = suggested_batch_size
+        print(f"未指定batch_size，使用建议值: {batch_size}")
+    else:
+        batch_size = args.batch_size
+        if batch_size != suggested_batch_size:
+            print(f"使用用户指定的batch_size: {batch_size}")
+            print(f"注意：建议的batch_size为: {suggested_batch_size}")
     
     # 创建TensorFlow数据集
     print("创建TensorFlow数据集...")
     train_dataset = create_tf_dataset(
         X_train, Y_train, init_states_train,
-        batch_size=optimal_batch_size,
+        batch_size=batch_size,
         shuffle=True,
-        num_parallel_calls=tf.data.AUTOTUNE  # 自动优化并行度
+        num_parallel_calls=data_config['num_parallel_calls'],
+        prefetch_buffer_size=data_config['prefetch_buffer_size']
     )
     
     val_dataset = create_tf_dataset(
         X_val, Y_val, init_states_val,
-        batch_size=optimal_batch_size,
+        batch_size=batch_size,
         shuffle=False,
-        num_parallel_calls=tf.data.AUTOTUNE
+        num_parallel_calls=data_config['num_parallel_calls'],
+        prefetch_buffer_size=data_config['prefetch_buffer_size']
     )
     
-    print(f"数据加载优化完成:")
-    print(f"- 优化后的批处理大小: {optimal_batch_size}")
+    print(f"数据加载配置:")
+    print(f"- 批处理大小: {batch_size}")
+    print(f"- 建议的批处理大小: {suggested_batch_size}")
     print(f"- 数据加载线程数: {num_workers if num_workers is not None else 'GPU模式'}")
+    print(f"- 并行调用数: {data_config['num_parallel_calls']}")
+    print(f"- 预取缓冲区大小: {data_config['prefetch_buffer_size']}")
     
     # 计算最大序列长度
     max_seq_length = max(len(x) for x in X_paths)
@@ -290,7 +277,7 @@ def main():
         print(f"已完成epochs: {epoch_offset}")
         print(f"剩余epochs: {remaining_epochs}")
         print(f"总epochs目标: {args.epochs + epoch_offset}")
-        print(f"批次大小: {optimal_batch_size}")
+        print(f"批次大小: {batch_size}")
         print(f"保存频率: 每 {args.save_frequency} epochs")
         print(f"早停设置: patience={15}, min_delta={1e-4}")
         print(f"学习率调度: 初始={args.learning_rate}, 最小={1e-6}, 动态调整")

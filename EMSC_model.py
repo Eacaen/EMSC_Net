@@ -17,31 +17,38 @@ class MSC_Cell(tf.keras.layers.Layer):
     hidden_dim: 内部层维度 (l)
     num_internal_layers: 内部层数量
     """
-    def __init__(self, state_dim=5, input_dim=3, hidden_dim=32, num_internal_layers=2):
-        super().__init__()
+    def __init__(self, state_dim=5, input_dim=3, hidden_dim=32, num_internal_layers=2, **kwargs):
+        super().__init__(**kwargs)
         self.state_dim = state_dim
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
+        
+        # 获取当前策略的dtype
+        self.dtype_policy = tf.keras.mixed_precision.global_policy()
+        self.compute_dtype = self.dtype_policy.compute_dtype
+        self.variable_dtype = self.dtype_policy.variable_dtype
         
         # 1. 内部层 (tanh∘tanh 逐层)
         self.internal_layers = []
         for i in range(num_internal_layers):
             # 每层包含两个 Dense 层 (W_a, W_b)
             self.internal_layers.append([
-                Dense(hidden_dim, activation='tanh', use_bias=True, name=f'W_a_{i}'),
-                Dense(hidden_dim, activation='tanh', use_bias=True, name=f'W_b_{i}')
+                Dense(hidden_dim, activation='tanh', use_bias=True, 
+                      dtype=self.variable_dtype, name=f'W_a_{i}'),
+                Dense(hidden_dim, activation='tanh', use_bias=True, 
+                      dtype=self.variable_dtype, name=f'W_b_{i}')
             ])
         
         # 2. 门控参数 (alpha, beta, gamma)
-        self.W_alpha = Dense(1, use_bias=True, name='W_alpha')
-        self.W_beta = Dense(1, use_bias=True, name='W_beta')
-        self.W_gamma = Dense(1, use_bias=True, name='W_gamma')
+        self.W_alpha = Dense(1, use_bias=True, dtype=self.variable_dtype, name='W_alpha')
+        self.W_beta = Dense(1, use_bias=True, dtype=self.variable_dtype, name='W_beta')
+        self.W_gamma = Dense(1, use_bias=True, dtype=self.variable_dtype, name='W_gamma')
         
         # 3. 候选状态
-        self.W_c = Dense(state_dim, use_bias=True, name='W_c')
+        self.W_c = Dense(state_dim, use_bias=True, dtype=self.variable_dtype, name='W_c')
         
         # 4. 输出层 (True_Stress)
-        self.W_out = Dense(1, use_bias=False, name='W_out')
+        self.W_out = Dense(1, use_bias=False, dtype=self.variable_dtype, name='W_out')
     
     def calc_direction_vec(self, delta_features):
         """计算增量方向向量"""
@@ -143,6 +150,12 @@ class MSC_Sequence(tf.keras.layers.Layer):
         self.hidden_dim = hidden_dim
         self.num_internal_layers = num_internal_layers
         self.max_sequence_length = max_sequence_length
+        
+        # 获取当前策略的dtype
+        self.dtype_policy = tf.keras.mixed_precision.global_policy()
+        self.compute_dtype = self.dtype_policy.compute_dtype
+        self.variable_dtype = self.dtype_policy.variable_dtype
+        
         self.msc_cell = MSC_Cell(
             state_dim=state_dim,
             input_dim=input_dim,
@@ -161,9 +174,9 @@ class MSC_Sequence(tf.keras.layers.Layer):
             outputs = outputs.write(t, output)
             return [t + 1, new_state, outputs]
         
-        # 使用固定大小的TensorArray和设置maximum_iterations
+        # 使用动态dtype的TensorArray
         outputs = tf.TensorArray(
-            dtype=tf.float32, 
+            dtype=self.compute_dtype,  # 使用计算dtype
             size=sequence_length,
             dynamic_size=False,
             clear_after_read=False
@@ -210,8 +223,13 @@ def build_msc_model(state_dim=8, input_dim=6, output_dim=1,
     num_internal_layers: 内部层数量
     max_sequence_length: 最大序列长度，用于XLA编译优化
     """
-    delta_input = Input(shape=(None, input_dim), name='delta_input')
-    init_state = Input(shape=(state_dim,), name='init_state')
+    # 获取当前策略的dtype
+    dtype_policy = tf.keras.mixed_precision.global_policy()
+    compute_dtype = dtype_policy.compute_dtype
+    variable_dtype = dtype_policy.variable_dtype
+    
+    delta_input = Input(shape=(None, input_dim), name='delta_input', dtype=compute_dtype)
+    init_state = Input(shape=(state_dim,), name='init_state', dtype=compute_dtype)
     
     state_seq = MSC_Sequence(
         state_dim=state_dim,
@@ -221,6 +239,6 @@ def build_msc_model(state_dim=8, input_dim=6, output_dim=1,
         max_sequence_length=max_sequence_length
     )([delta_input, init_state])
     
-    stress_out = Dense(output_dim, name='stress_out')(state_seq)
+    stress_out = Dense(output_dim, name='stress_out', dtype=variable_dtype)(state_seq)
     
     return Model(inputs=[delta_input, init_state], outputs=stress_out)

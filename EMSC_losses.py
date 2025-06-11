@@ -26,6 +26,11 @@ class EMSCLoss(tf.keras.losses.Loss):
             super().__init__()
         self.state_dim = state_dim
         self.epoch = tf.Variable(0, trainable=False, dtype=tf.int32)
+        
+        # 获取当前策略的dtype
+        self.dtype_policy = tf.keras.mixed_precision.global_policy()
+        self.compute_dtype = self.dtype_policy.compute_dtype
+        self.variable_dtype = self.dtype_policy.variable_dtype
     
     def call(self, y_true, y_pred, gate_params=None):
         """
@@ -36,16 +41,20 @@ class EMSCLoss(tf.keras.losses.Loss):
         y_pred: 预测值 (batch_size, seq_len, 1)
         gate_params: 门控参数字典，包含 'alpha', 'beta', 'gamma' 序列
         """
+        # 确保输入使用正确的dtype
+        y_true = tf.cast(y_true, self.compute_dtype)
+        y_pred = tf.cast(y_pred, self.compute_dtype)
+        
         # 1. 计算MSE损失
         mse_loss = tf.reduce_mean(tf.square(y_true - y_pred))
         
         if gate_params is None:
             return mse_loss
         
-        # 2. 获取门控参数序列
-        alpha_seq = gate_params['alpha']  # (batch_size, seq_len, state_dim)
-        beta_seq = gate_params['beta']    # (batch_size, seq_len, state_dim)
-        gamma_seq = gate_params['gamma']  # (batch_size, seq_len, state_dim)
+        # 2. 获取门控参数序列并确保正确的dtype
+        alpha_seq = tf.cast(gate_params['alpha'], self.compute_dtype)  # (batch_size, seq_len, state_dim)
+        beta_seq = tf.cast(gate_params['beta'], self.compute_dtype)    # (batch_size, seq_len, state_dim)
+        gamma_seq = tf.cast(gate_params['gamma'], self.compute_dtype)  # (batch_size, seq_len, state_dim)
         
         # 3. 计算门控参数在序列上的平均值
         mean_alpha = tf.reduce_mean(alpha_seq, axis=1)  # (batch_size, state_dim)
@@ -59,7 +68,7 @@ class EMSCLoss(tf.keras.losses.Loss):
         
         # 5. 计算动态正则化权重
         # 1000个epoch内从1e-3降到1e-6，之后恒为1e-6
-        omega = tf.maximum(1e-6, 1e-3 - 9.99e-7 * tf.cast(self.epoch, tf.float32))
+        omega = tf.maximum(1e-6, 1e-3 - 9.99e-7 * tf.cast(self.epoch, self.compute_dtype))
         
         # 6. 计算总损失
         total_loss = mse_loss + omega * reg_loss

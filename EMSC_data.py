@@ -135,9 +135,18 @@ class EMSCDataGenerator(Sequence):
             thread.join(timeout=1)
 
 def create_tf_dataset(X_paths, Y_paths, init_states, batch_size=8, shuffle=True,
-                     num_parallel_calls=tf.data.AUTOTUNE):
+                     num_parallel_calls=tf.data.AUTOTUNE, prefetch_buffer_size=None):
     """
     创建TensorFlow数据集，针对15000条数据优化参数
+    
+    Args:
+        X_paths: 输入数据路径列表
+        Y_paths: 输出数据路径列表
+        init_states: 初始状态数组
+        batch_size: 批处理大小
+        shuffle: 是否打乱数据
+        num_parallel_calls: 并行调用数
+        prefetch_buffer_size: 预取缓冲区大小，如果为None则使用AUTOTUNE
     """
     total_samples = len(X_paths)
     shuffle_buffer_size = min(total_samples, 5000)
@@ -159,7 +168,10 @@ def create_tf_dataset(X_paths, Y_paths, init_states, batch_size=8, shuffle=True,
         )
     
     dataset = dataset.batch(batch_size)
-    dataset = dataset.prefetch(buffer_size=tf.data.AUTOTUNE)
+    
+    # 使用指定的预取缓冲区大小或AUTOTUNE
+    prefetch_size = prefetch_buffer_size if prefetch_buffer_size is not None else tf.data.AUTOTUNE
+    dataset = dataset.prefetch(buffer_size=prefetch_size)
     
     # 并行处理优化
     dataset = dataset.map(
