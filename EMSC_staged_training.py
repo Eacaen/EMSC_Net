@@ -19,7 +19,7 @@ import json
 from typing import List, Tuple, Optional, Dict
 
 # 导入现有模块
-from EMSC_model import build_msc_model
+from EMSC_model import build_msc_model, load_or_create_model_with_history
 from EMSC_data import load_dataset_from_npz
 from EMSC_callbacks import MSCProgressCallback, create_early_stopping_callback
 from EMSC_config import get_dataset_paths
@@ -215,38 +215,20 @@ class EMSCStagedTrainer:
         (train_windows_X, train_windows_Y, train_init_states,
          val_windows_X, val_windows_Y, val_init_states) = self.prepare_stage_data(stage_name)
         
-        # 构建模型
-        model = build_msc_model(
+        # 使用 load_or_create_model_with_history 加载或创建模型
+        model, history = load_or_create_model_with_history(
+            model_dir=stage_dir,
             state_dim=self.state_dim,
             hidden_dim=self.hidden_dim,
-            learning_rate=self.learning_rate
-        )
-        
-        # 设置回调
-        callbacks = [
-            MSCProgressCallback(stage_name),
-            create_early_stopping_callback(patience=50),
-            tf.keras.callbacks.ModelCheckpoint(
-                os.path.join(stage_dir, 'best_model.h5'),
-                save_best_only=True,
-                monitor='val_loss'
-            )
-        ]
-        
-        # 训练模型
-        history = model.fit(
-            x=[train_windows_X, train_init_states],
-            y=train_windows_Y,
-            validation_data=([val_windows_X, val_init_states], val_windows_Y),
+            learning_rate=self.learning_rate,
             epochs=config['epochs'],
-            callbacks=callbacks,
-            verbose=1
+            train_data=([train_windows_X, train_init_states], train_windows_Y),
+            val_data=([val_windows_X, val_init_states], val_windows_Y),
+            callbacks=[
+                MSCProgressCallback(stage_name),
+                create_early_stopping_callback(patience=50)
+            ]
         )
-        
-        # 保存训练历史
-        history_path = os.path.join(stage_dir, 'training_history.json')
-        with open(history_path, 'w') as f:
-            json.dump(history.history, f, indent=4)
         
         # 保存阶段配置
         self.save_stage_config(stage_name)
@@ -267,7 +249,7 @@ class EMSCStagedTrainer:
             histories[stage_name] = history
         
         return models, histories
-
+    
     def analyze_stage_requirements(self, stage_name):
         """
         分析阶段训练的数据要求
@@ -326,9 +308,6 @@ class EMSCStagedTrainer:
             json.dump(config, f, indent=4)
         
         print(f"阶段配置已保存: {config_path}")
-
-
-
 
 
 def main():

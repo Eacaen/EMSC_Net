@@ -12,7 +12,7 @@ from tensorflow.keras import mixed_precision
 # 导入自定义模块
 from EMSC_model import build_msc_model
 from EMSC_data import EMSCDataGenerator, create_tf_dataset, load_dataset_from_npz
-from EMSC_callbacks import MSCProgressCallback, create_early_stopping_callback
+from EMSC_callbacks import MSCProgressCallback, create_early_stopping_callback, create_learning_rate_scheduler
 from EMSC_config import (create_training_config, save_training_config, 
                         parse_training_args, get_dataset_paths)
 from EMSC_utils import (load_or_create_model_with_history, 
@@ -21,8 +21,36 @@ from EMSC_utils import (load_or_create_model_with_history,
                        print_training_summary)
 from EMSC_losses import EMSCLoss
 
-def setup_cpu_environment():
-    """设置CPU训练环境"""
+def check_environment():
+    """检查并配置训练环境，优先使用GPU，回退到CPU"""
+    print("检查训练环境...")
+    print(f"TensorFlow版本: {tf.__version__}")
+    print(f"当前工作目录: {os.getcwd()}")
+    
+    # 检查GPU可用性
+    gpus = tf.config.list_physical_devices('GPU')
+    if gpus:
+        print(f"发现 {len(gpus)} 个GPU设备:")
+        for gpu in gpus:
+            print(f"- {gpu}")
+            # 配置GPU内存增长
+            try:
+                tf.config.experimental.set_memory_growth(gpu, True)
+                print(f"已为 {gpu} 启用内存增长")
+            except RuntimeError as e:
+                print(f"配置GPU内存增长时出错: {e}")
+        
+        # 设置GPU为默认设备
+        try:
+            tf.config.set_visible_devices(gpus[0], 'GPU')
+            print(f"使用GPU设备: {gpus[0]}")
+            return None  # 使用GPU时不需要返回worker数
+        except RuntimeError as e:
+            print(f"设置GPU设备时出错: {e}")
+    
+    # 如果没有GPU或GPU设置失败，配置CPU环境
+    print("未发现GPU设备或GPU设置失败，将使用CPU训练")
+    
     # 获取CPU核心数
     cpu_count = os.cpu_count()
     if cpu_count is None:
@@ -44,20 +72,35 @@ def setup_cpu_environment():
     print(f"- 总CPU核心数: {cpu_count}")
     print(f"- 训练使用线程数: {num_workers}")
     
+    # 检查内存使用情况
+    try:
+        import psutil
+        memory = psutil.virtual_memory()
+        print(f"\n系统内存信息:")
+        print(f"总内存: {memory.total / (1024**3):.1f} GB")
+        print(f"可用内存: {memory.available / (1024**3):.1f} GB")
+        print(f"内存使用率: {memory.percent}%")
+    except ImportError:
+        print("未安装psutil，跳过内存检查")
+    
     return num_workers
 
 def get_optimal_batch_size(num_samples, num_workers):
     """
-    计算CPU训练的最优批处理大小
+    计算最优批处理大小
     
     Args:
         num_samples: 训练样本数量
-        num_workers: 工作线程数
+        num_workers: 工作线程数（CPU模式）或None（GPU模式）
     
     Returns:
         int: 最优批处理大小
     """
-    # 基础批处理大小
+    if num_workers is None:  # GPU模式
+        # GPU模式下使用较大的批处理大小
+        return min(128, num_samples // 50)
+    
+    # CPU模式下的批处理大小计算
     base_batch = min(32, num_samples // 100)
     base_batch = max(8, base_batch)
     
@@ -70,8 +113,8 @@ def get_optimal_batch_size(num_samples, num_workers):
     return optimal_batch
 
 def main():
-    # 设置CPU环境
-    num_workers = setup_cpu_environment()
+    # 检查并配置环境
+    num_workers = check_environment()
     
     # 设置TensorFlow的默认数据类型
     tf.keras.backend.set_floatx('float32')
@@ -133,24 +176,6 @@ def main():
     # 计算最优批处理大小
     optimal_batch_size = get_optimal_batch_size(len(X_train), num_workers)
     
-    # 创建数据生成器
-    # print("创建数据生成器...")
-    # train_generator = EMSCDataGenerator(
-    #     X_train, Y_train, init_states_train,
-    #     batch_size=optimal_batch_size,
-    #     shuffle=True,
-    #     num_workers=num_workers,  # 使用多线程
-    #     prefetch_factor=2  # 预加载因子
-    # )
-    
-    # val_generator = EMSCDataGenerator(
-    #     X_val, Y_val, init_states_val,
-    #     batch_size=optimal_batch_size,
-    #     shuffle=False,
-    #     num_workers=num_workers,
-    #     prefetch_factor=2
-    # )
-    
     # 创建TensorFlow数据集
     print("创建TensorFlow数据集...")
     train_dataset = create_tf_dataset(
@@ -169,9 +194,7 @@ def main():
     
     print(f"数据加载优化完成:")
     print(f"- 优化后的批处理大小: {optimal_batch_size}")
-    # print(f"- 训练集批次数: {len(train_generator)}")
-    # print(f"- 验证集批次数: {len(val_generator)}")
-    print(f"- 数据加载线程数: {num_workers}")
+    print(f"- 数据加载线程数: {num_workers if num_workers is not None else 'GPU模式'}")
     
     # 计算最大序列长度
     max_seq_length = max(len(x) for x in X_paths)
@@ -245,6 +268,18 @@ def main():
     
     early_stopping = create_early_stopping_callback()
     
+    # 创建学习率调度器
+    lr_scheduler = create_learning_rate_scheduler(
+        initial_learning_rate=args.learning_rate,
+        decay_type='validation',  # 使用基于验证损失的动态调整
+        decay_steps=args.epochs,  # 总epochs数
+        decay_rate=0.9,          # 指数衰减率（当使用exponential时）
+        min_learning_rate=1e-6,  # 最小学习率
+        patience=5,              # 验证损失不改善的容忍轮数
+        factor=0.5,             # 学习率衰减因子
+        verbose=1               # 打印学习率变化
+    )
+    
     # 训练模型
     remaining_epochs = args.epochs
     if remaining_epochs <= 0:
@@ -257,11 +292,12 @@ def main():
         print(f"总epochs目标: {args.epochs + epoch_offset}")
         print(f"批次大小: {optimal_batch_size}")
         print(f"保存频率: 每 {args.save_frequency} epochs")
-        print(f"早停设置: patience={50}, min_delta={1e-4}")
+        print(f"早停设置: patience={15}, min_delta={1e-4}")
+        print(f"学习率调度: 初始={args.learning_rate}, 最小={1e-6}, 动态调整")
         print(f"模型保存路径: {dataset_dir}")
         print(f"训练数据大小: {len(X_train)}")
         print(f"验证数据大小: {len(X_val)}")
-        print(f"CPU线程数: {num_workers}")
+        print(f"训练模式: {'GPU' if num_workers is None else 'CPU (多线程)'}")
         
         # 使用性能优化的训练配置
         history = model.fit(
@@ -270,10 +306,10 @@ def main():
             epochs=args.epochs,
             initial_epoch=epoch_offset,
             verbose=1,
-            callbacks=[progress_callback, early_stopping],
-            # 启用多进程和多线程
-            use_multiprocessing=True,
-            workers=num_workers,
+            callbacks=[progress_callback, early_stopping, lr_scheduler],
+            # 仅在CPU模式下启用多进程
+            use_multiprocessing=num_workers is not None,
+            workers=num_workers if num_workers is not None else 1,
             max_queue_size=10
         )
         

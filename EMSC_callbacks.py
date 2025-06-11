@@ -300,12 +300,107 @@ class MSCProgressCallback(Callback):
             print(f"Average epoch time: {avg_epoch_time:.2f}s - "
                   f"Estimated remaining time: {estimated_time/60:.1f}min")
 
+class LearningRateScheduler(tf.keras.callbacks.Callback):
+    """
+    自定义学习率调度器回调
+    支持多种学习率衰减策略：
+    1. 指数衰减
+    2. 余弦退火
+    3. 基于验证损失的动态调整
+    """
+    def __init__(self, 
+                 initial_learning_rate=0.001,
+                 decay_type='exponential',
+                 decay_steps=1000,
+                 decay_rate=0.9,
+                 min_learning_rate=1e-6,
+                 patience=5,
+                 factor=0.5,
+                 verbose=1):
+        super().__init__()
+        self.initial_learning_rate = initial_learning_rate
+        self.decay_type = decay_type
+        self.decay_steps = decay_steps
+        self.decay_rate = decay_rate
+        self.min_learning_rate = min_learning_rate
+        self.patience = patience
+        self.factor = factor
+        self.verbose = verbose
+        
+        # 用于基于验证损失的动态调整
+        self.best_val_loss = float('inf')
+        self.wait = 0
+        self.current_lr = initial_learning_rate
+        
+    def on_train_begin(self, logs=None):
+        """训练开始时初始化"""
+        self.optimizer = self.model.optimizer
+        self.initial_learning_rate = float(self.optimizer.learning_rate.numpy())
+        self.current_lr = self.initial_learning_rate
+        
+    def on_epoch_end(self, epoch, logs=None):
+        """每个epoch结束时更新学习率"""
+        if self.decay_type == 'exponential':
+            # 指数衰减
+            new_lr = self.initial_learning_rate * (self.decay_rate ** (epoch / self.decay_steps))
+        elif self.decay_type == 'cosine':
+            # 余弦退火
+            progress = epoch / self.decay_steps
+            new_lr = self.min_learning_rate + 0.5 * (self.initial_learning_rate - self.min_learning_rate) * \
+                    (1 + np.cos(np.pi * progress))
+        elif self.decay_type == 'validation':
+            # 基于验证损失的动态调整
+            current_val_loss = logs.get('val_loss')
+            if current_val_loss < self.best_val_loss:
+                self.best_val_loss = current_val_loss
+                self.wait = 0
+            else:
+                self.wait += 1
+                if self.wait >= self.patience:
+                    new_lr = max(self.current_lr * self.factor, self.min_learning_rate)
+                    self.wait = 0
+                else:
+                    new_lr = self.current_lr
+        else:
+            raise ValueError(f"Unsupported decay type: {self.decay_type}")
+        
+        # 确保学习率不低于最小值
+        new_lr = max(new_lr, self.min_learning_rate)
+        
+        # 更新优化器的学习率
+        self.optimizer.learning_rate.assign(new_lr)
+        self.current_lr = new_lr
+        
+        if self.verbose > 0:
+            print(f"\nEpoch {epoch + 1}: Learning rate is {new_lr:.6f}")
+
+def create_learning_rate_scheduler(initial_learning_rate=0.001,
+                                 decay_type='exponential',
+                                 decay_steps=1000,
+                                 decay_rate=0.9,
+                                 min_learning_rate=1e-6,
+                                 patience=5,
+                                 factor=0.5,
+                                 verbose=1):
+    """创建学习率调度器回调"""
+    return LearningRateScheduler(
+        initial_learning_rate=initial_learning_rate,
+        decay_type=decay_type,
+        decay_steps=decay_steps,
+        decay_rate=decay_rate,
+        min_learning_rate=min_learning_rate,
+        patience=patience,
+        factor=factor,
+        verbose=verbose
+    )
+
 def create_early_stopping_callback():
     """创建早停回调"""
     return EarlyStopping(
-        monitor='val_loss',
-        patience=50,
-        min_delta=1e-4,
-        restore_best_weights=True,
-        verbose=1
+        monitor='val_loss',      # 监控验证集损失值
+        patience=15,             # 容忍验证集损失15个epoch不改善
+        min_delta=1e-4,         # 最小改善阈值，损失改善需超过此值
+        mode='min',             # 监控指标越小越好
+        restore_best_weights=True,  # 训练结束时恢复最佳权重
+        verbose=1               # 打印早停相关信息
     )
