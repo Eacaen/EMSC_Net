@@ -81,6 +81,8 @@ def parse_training_args():
                        help='状态向量维度 (默认: 8)')
     parser.add_argument('--hidden_dim', type=int, default=32,
                        help='隐藏层维度 (默认: 32)')
+    parser.add_argument('--mixed_precision', type=str, choices=['true', 'false', 'auto'], default='auto',
+                       help='是否启用混合精度训练 (选项: true, false, auto，默认: auto)')
     
     return parser.parse_args()
 

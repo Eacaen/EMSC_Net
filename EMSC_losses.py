@@ -45,8 +45,21 @@ class EMSCLoss(tf.keras.losses.Loss):
         y_true = tf.cast(y_true, self.emsc_compute_dtype)
         y_pred = tf.cast(y_pred, self.emsc_compute_dtype)
         
+        # 数值稳定性检查 - 裁剪输入到合理范围
+        if self.emsc_compute_dtype == tf.float16:
+            # float16 的安全范围
+            y_true = tf.clip_by_value(y_true, -1000.0, 1000.0)
+            y_pred = tf.clip_by_value(y_pred, -1000.0, 1000.0)
+        
+        # 检查 NaN 和 Inf
+        y_true = tf.where(tf.math.is_finite(y_true), y_true, tf.zeros_like(y_true))
+        y_pred = tf.where(tf.math.is_finite(y_pred), y_pred, tf.zeros_like(y_pred))
+        
         # 1. 计算MSE损失
         mse_loss = tf.reduce_mean(tf.square(y_true - y_pred))
+        
+        # 确保MSE损失是有限的
+        mse_loss = tf.where(tf.math.is_finite(mse_loss), mse_loss, tf.cast(1.0, self.emsc_compute_dtype))
         
         if gate_params is None:
             return mse_loss

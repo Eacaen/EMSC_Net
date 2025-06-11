@@ -29,26 +29,41 @@ class MSC_Cell(tf.keras.layers.Layer):
         self.emsc_variable_dtype = mixed_precision_policy.variable_dtype
         
         # 1. 内部层 (tanh∘tanh 逐层)
+        # 使用更保守的初始化防止数值不稳定
+        initializer = 'glorot_uniform' if self.emsc_compute_dtype == tf.float16 else 'glorot_normal'
+        
         self.internal_layers = []
         for i in range(num_internal_layers):
             # 每层包含两个 Dense 层 (W_a, W_b)
             self.internal_layers.append([
                 Dense(hidden_dim, activation='tanh', use_bias=True, 
-                      dtype=self.emsc_variable_dtype, name=f'W_a_{i}'),
+                      dtype=self.emsc_variable_dtype, 
+                      kernel_initializer=initializer,
+                      bias_initializer='zeros',
+                      name=f'W_a_{i}'),
                 Dense(hidden_dim, activation='tanh', use_bias=True, 
-                      dtype=self.emsc_variable_dtype, name=f'W_b_{i}')
+                      dtype=self.emsc_variable_dtype,
+                      kernel_initializer=initializer,
+                      bias_initializer='zeros',
+                      name=f'W_b_{i}')
             ])
         
-        # 2. 门控参数 (alpha, beta, gamma)
-        self.W_alpha = Dense(1, use_bias=True, dtype=self.emsc_variable_dtype, name='W_alpha')
-        self.W_beta = Dense(1, use_bias=True, dtype=self.emsc_variable_dtype, name='W_beta')
-        self.W_gamma = Dense(1, use_bias=True, dtype=self.emsc_variable_dtype, name='W_gamma')
+        # 2. 门控参数 (alpha, beta, gamma) - 使用保守初始化
+        self.W_alpha = Dense(1, use_bias=True, dtype=self.emsc_variable_dtype, 
+                           kernel_initializer=initializer, bias_initializer='zeros', name='W_alpha')
+        self.W_beta = Dense(1, use_bias=True, dtype=self.emsc_variable_dtype, 
+                          kernel_initializer=initializer, bias_initializer='zeros', name='W_beta')
+        self.W_gamma = Dense(1, use_bias=True, dtype=self.emsc_variable_dtype, 
+                           kernel_initializer=initializer, bias_initializer='zeros', name='W_gamma')
         
         # 3. 候选状态
-        self.W_c = Dense(state_dim, use_bias=True, dtype=self.emsc_variable_dtype, name='W_c')
+        self.W_c = Dense(state_dim, use_bias=True, dtype=self.emsc_variable_dtype, 
+                        kernel_initializer=initializer, bias_initializer='zeros', name='W_c')
         
-        # 4. 输出层 (True_Stress)
-        self.W_out = Dense(1, use_bias=False, dtype=self.emsc_variable_dtype, name='W_out')
+        # 4. 输出层 (True_Stress) - 更小的初始化范围
+        small_initializer = 'zeros' if self.emsc_compute_dtype == tf.float16 else 'glorot_normal'
+        self.W_out = Dense(1, use_bias=False, dtype=self.emsc_variable_dtype, 
+                          kernel_initializer=small_initializer, name='W_out')
     
     def calc_direction_vec(self, delta_features):
         """计算增量方向向量"""
@@ -105,9 +120,20 @@ class MSC_Cell(tf.keras.layers.Layer):
         # 确保常数也使用正确的数据类型
         one = tf.cast(1.0, self.emsc_compute_dtype)
         
-        z = one - tf.exp(-alpha * tf.abs(delta_strain) - 
-                         beta * delta_time - 
-                         gamma * tf.abs(delta_temperature))
+        # 计算指数项，添加数值稳定性保护
+        exp_arg = -alpha * tf.abs(delta_strain) - beta * delta_time - gamma * tf.abs(delta_temperature)
+        
+        # 裁剪指数参数防止溢出
+        if self.emsc_compute_dtype == tf.float16:
+            exp_arg = tf.clip_by_value(exp_arg, -10.0, 10.0)  # float16 安全范围
+        else:
+            exp_arg = tf.clip_by_value(exp_arg, -50.0, 50.0)
+        
+        exp_term = tf.exp(exp_arg)
+        z = one - exp_term
+        
+        # 确保 z 在合理范围内
+        z = tf.clip_by_value(z, 0.0, 1.0)
         return z
     
     def reconstruct_temp_seq(self, delta_x):

@@ -13,7 +13,7 @@ from typing import Optional
 # 导入自定义模块
 from EMSC_model import build_msc_model
 from EMSC_data import EMSCDataGenerator, create_tf_dataset, load_dataset_from_npz
-from EMSC_callbacks import MSCProgressCallback, create_early_stopping_callback, create_learning_rate_scheduler
+from EMSC_callbacks import MSCProgressCallback, create_early_stopping_callback, create_learning_rate_scheduler, create_nan_monitor_callback
 from EMSC_config import (create_training_config, save_training_config, 
                         parse_training_args, get_dataset_paths)
 from EMSC_utils import (load_or_create_model_with_history, 
@@ -82,25 +82,39 @@ def main():
     # 检查并配置环境
     num_workers = check_environment()
     
+    # 解析命令行参数
+    args = parse_training_args()
+    
     # 获取云环境配置
     cloud_config = get_cloud_config()
     
-    # 根据云配置设置混合精度策略
-    if cloud_config.is_mixed_precision_enabled():
+    # 根据命令行参数和云配置设置混合精度策略
+    def should_use_mixed_precision():
+        """判断是否应该使用混合精度"""
+        if args.mixed_precision == 'true':
+            return True
+        elif args.mixed_precision == 'false':
+            return False
+        else:  # 'auto' 模式
+            # 检查GPU类型和云配置
+            gpus = tf.config.list_physical_devices('GPU')
+            if gpus and "METAL" in str(gpus[0]):
+                print("检测到Apple Silicon GPU，在auto模式下禁用混合精度")
+                return False
+            return cloud_config.is_mixed_precision_enabled()
+    
+    if should_use_mixed_precision():
         try:
             policy = tf.keras.mixed_precision.Policy('mixed_float16')
             tf.keras.mixed_precision.set_global_policy(policy)
-            print("启用混合精度训练 (mixed_float16)")
+            print(f"启用混合精度训练 (mixed_float16) - 参数设置: {args.mixed_precision}")
         except Exception as e:
             print(f"启用混合精度失败，回退到float32: {e}")
             tf.keras.backend.set_floatx('float32')
     else:
-        # 如果云配置禁用混合精度，则使用float32
+        # 使用float32精度
         tf.keras.backend.set_floatx('float32')
-        print("使用float32精度训练")
-    
-    # 解析命令行参数
-    args = parse_training_args()
+        print(f"使用float32精度训练 - 参数设置: {args.mixed_precision}")
     
     # 获取数据集路径
     paths = get_dataset_paths(args.dataset)
@@ -243,13 +257,32 @@ def main():
             max_sequence_length=max_seq_length
         )
     
-    # 编译模型
-    optimizer = Adam(args.learning_rate)
+    # 编译模型 - 根据实际的精度策略配置优化器
+    current_policy = tf.keras.mixed_precision.global_policy()
+    is_mixed_precision_active = current_policy.compute_dtype == tf.float16
     
-    # 如果启用混合精度，使用LossScaleOptimizer包装优化器
-    if cloud_config.is_mixed_precision_enabled():
-        optimizer = tf.keras.mixed_precision.LossScaleOptimizer(optimizer)
+    if is_mixed_precision_active:
+        # 混合精度下使用较小的学习率
+        adjusted_lr = args.learning_rate * 0.5  # 减半学习率
+        print(f"混合精度训练：调整学习率从 {args.learning_rate} 到 {adjusted_lr}")
+        
+        # 添加梯度裁剪防止梯度爆炸
+        optimizer = Adam(
+            learning_rate=adjusted_lr,
+            clipnorm=1.0,  # 梯度裁剪
+            epsilon=1e-7   # 增加数值稳定性
+        )
+        
+        # 使用LossScaleOptimizer，并设置合适的loss scale
+        optimizer = tf.keras.mixed_precision.LossScaleOptimizer(
+            optimizer, 
+            initial_scale=2**15,  # 较保守的初始scale
+            dynamic_growth_steps=2000  # 更保守的动态调整
+        )
         print("使用LossScaleOptimizer包装优化器以支持混合精度训练")
+    else:
+        optimizer = Adam(args.learning_rate)
+        print(f"使用标准Adam优化器，学习率: {args.learning_rate}")
     
     custom_loss = EMSCLoss(state_dim=args.state_dim)
     model.compile(
@@ -271,6 +304,9 @@ def main():
     )
     
     early_stopping = create_early_stopping_callback()
+    
+    # 创建NaN监控回调（混合精度训练必需）
+    nan_monitor = create_nan_monitor_callback(terminate_on_nan=True, patience=3)
     
     # 创建学习率调度器
     lr_scheduler = create_learning_rate_scheduler(
@@ -310,7 +346,7 @@ def main():
             epochs=args.epochs,
             initial_epoch=epoch_offset,
             verbose=1,
-            callbacks=[progress_callback, early_stopping, lr_scheduler],
+            callbacks=[progress_callback, early_stopping, lr_scheduler, nan_monitor],
             # 仅在CPU模式下启用多进程
             use_multiprocessing=num_workers is not None,
             workers=num_workers if num_workers is not None else 1,

@@ -409,3 +409,39 @@ def create_early_stopping_callback():
         restore_best_weights=True,  # 训练结束时恢复最佳权重
         verbose=1               # 打印早停相关信息
     )
+
+class NaNMonitorCallback(tf.keras.callbacks.Callback):
+    """
+    NaN监控回调，用于混合精度训练中的数值稳定性检查
+    """
+    def __init__(self, terminate_on_nan=True, patience=3):
+        super().__init__()
+        self.terminate_on_nan = terminate_on_nan
+        self.patience = patience
+        self.nan_count = 0
+        
+    def on_batch_end(self, batch, logs=None):
+        logs = logs or {}
+        loss = logs.get('loss')
+        
+        if loss is not None and (np.isnan(loss) or np.isinf(loss)):
+            print(f"\nWarning: NaN/Inf loss detected at batch {batch}!")
+            self.nan_count += 1
+            
+            if self.terminate_on_nan and self.nan_count >= self.patience:
+                print(f"Terminating training due to {self.nan_count} consecutive NaN losses")
+                self.model.stop_training = True
+        else:
+            # 重置计数器如果损失正常
+            self.nan_count = 0
+    
+    def on_epoch_end(self, epoch, logs=None):
+        logs = logs or {}
+        val_loss = logs.get('val_loss')
+        
+        if val_loss is not None and (np.isnan(val_loss) or np.isinf(val_loss)):
+            print(f"\nWarning: NaN/Inf validation loss at epoch {epoch}!")
+
+def create_nan_monitor_callback(terminate_on_nan=True, patience=3):
+    """创建NaN监控回调"""
+    return NaNMonitorCallback(terminate_on_nan=terminate_on_nan, patience=patience)
