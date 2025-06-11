@@ -73,8 +73,8 @@ def parse_training_args():
                        help='数据集名称 (默认: dataset)')
     parser.add_argument('--resume', action='store_true', default=True,
                        help='是否从检查点恢复训练 (默认: True)')
-    parser.add_argument('--batch_size', type=int, default=8,
-                       help='批次大小 (默认: 8)')
+    parser.add_argument('--batch_size', type=int, default=None,
+                       help='批次大小 (默认: None，自动计算)')
     parser.add_argument('--learning_rate', type=float, default=1e-3,
                        help='学习率 (默认: 1e-3)')
     parser.add_argument('--state_dim', type=int, default=8,

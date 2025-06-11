@@ -173,27 +173,35 @@ def main():
     print(f"训练集大小: {len(X_train)}")
     print(f"验证集大小: {len(X_val)}")
     
-    # 计算最优批处理大小
-    optimal_batch_size = get_optimal_batch_size(len(X_train), num_workers)
+    # 确定批处理大小：优先使用用户指定的batch_size，否则自动计算
+    if args.batch_size is not None:
+        batch_size = args.batch_size
+        optimal_batch_size = get_optimal_batch_size(len(X_train), num_workers)
+        print(f"使用用户指定的batch_size: {batch_size}")
+        if batch_size != optimal_batch_size:
+            print(f"注意：建议的batch_size为: {optimal_batch_size}")
+    else:
+        batch_size = get_optimal_batch_size(len(X_train), num_workers)
+        print(f"未指定batch_size，使用自动计算值: {batch_size}")
     
     # 创建TensorFlow数据集
     print("创建TensorFlow数据集...")
     train_dataset = create_tf_dataset(
         X_train, Y_train, init_states_train,
-        batch_size=optimal_batch_size,
+        batch_size=batch_size,
         shuffle=True,
         num_parallel_calls=tf.data.AUTOTUNE  # 自动优化并行度
     )
     
     val_dataset = create_tf_dataset(
         X_val, Y_val, init_states_val,
-        batch_size=optimal_batch_size,
+        batch_size=batch_size,
         shuffle=False,
         num_parallel_calls=tf.data.AUTOTUNE
     )
     
-    print(f"数据加载优化完成:")
-    print(f"- 优化后的批处理大小: {optimal_batch_size}")
+    print(f"数据加载配置:")
+    print(f"- 最终使用的批处理大小: {batch_size}")
     print(f"- 数据加载线程数: {num_workers if num_workers is not None else 'GPU模式'}")
     
     # 计算最大序列长度
@@ -290,7 +298,7 @@ def main():
         print(f"已完成epochs: {epoch_offset}")
         print(f"剩余epochs: {remaining_epochs}")
         print(f"总epochs目标: {args.epochs + epoch_offset}")
-        print(f"批次大小: {optimal_batch_size}")
+        print(f"批次大小: {batch_size}")
         print(f"保存频率: 每 {args.save_frequency} epochs")
         print(f"早停设置: patience={15}, min_delta={1e-4}")
         print(f"学习率调度: 初始={args.learning_rate}, 最小={1e-6}, 动态调整")
