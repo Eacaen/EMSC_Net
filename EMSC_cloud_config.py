@@ -132,6 +132,37 @@ class CloudEnvironmentConfig:
                 gpu_info['count'] = len(gpus)
                 gpu_info['devices'] = [gpu.name for gpu in gpus]
                 
+                # 获取第一个GPU的显存信息
+                gpu = gpus[0]
+                gpu_details = tf.config.experimental.get_device_details(gpu)
+                gpu_memory = gpu_details.get('device_memory_size', 0) / (1024**3)  # 转换为GB
+                
+                # 根据显存大小设置batch size
+                if gpu_memory >= 16:  # 16GB及以上显存
+                    self.config['batch_size'] = 512
+                elif gpu_memory >= 8:  # 8GB显存
+                    self.config['batch_size'] = 256
+                elif gpu_memory >= 6:  # 6GB显存
+                    self.config['batch_size'] = 128
+                elif gpu_memory >= 4:  # 4GB显存
+                    self.config['batch_size'] = 64
+                else:  # 4GB以下显存
+                    self.config['batch_size'] = 32
+                
+                # 根据显存大小决定是否启用混合精度
+                if gpu_memory < 6:  # 6GB以下显存强制启用混合精度
+                    self.config['mixed_precision'] = True
+                else:
+                    self.config['mixed_precision'] = True  # 默认启用
+                
+                print(f"检测到GPU显存: {gpu_memory:.1f}GB")
+                print(f"根据显存大小设置batch_size: {self.config['batch_size']}")
+                print(f"混合精度训练: {'启用' if self.config['mixed_precision'] else '禁用'}")
+                
+                # 设置GPU内存增长
+                for gpu in gpus:
+                    tf.config.experimental.set_memory_growth(gpu, True)
+                
                 # 获取每个GPU的详细信息
                 for gpu in gpus:
                     try:
