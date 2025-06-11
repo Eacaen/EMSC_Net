@@ -23,10 +23,10 @@ class MSC_Cell(tf.keras.layers.Layer):
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         
-        # 获取当前策略的dtype（使用完全不同的属性名避免冲突）
-        self._mixed_precision_policy = tf.keras.mixed_precision.global_policy()
-        self._compute_dtype = self._mixed_precision_policy.compute_dtype
-        self._variable_dtype = self._mixed_precision_policy.variable_dtype
+        # 获取当前策略的dtype（使用完全自定义的属性名避免冲突）
+        mixed_precision_policy = tf.keras.mixed_precision.global_policy()
+        self.emsc_compute_dtype = mixed_precision_policy.compute_dtype
+        self.emsc_variable_dtype = mixed_precision_policy.variable_dtype
         
         # 1. 内部层 (tanh∘tanh 逐层)
         self.internal_layers = []
@@ -34,21 +34,21 @@ class MSC_Cell(tf.keras.layers.Layer):
             # 每层包含两个 Dense 层 (W_a, W_b)
             self.internal_layers.append([
                 Dense(hidden_dim, activation='tanh', use_bias=True, 
-                      dtype=self._variable_dtype, name=f'W_a_{i}'),
+                      dtype=self.emsc_variable_dtype, name=f'W_a_{i}'),
                 Dense(hidden_dim, activation='tanh', use_bias=True, 
-                      dtype=self._variable_dtype, name=f'W_b_{i}')
+                      dtype=self.emsc_variable_dtype, name=f'W_b_{i}')
             ])
         
         # 2. 门控参数 (alpha, beta, gamma)
-        self.W_alpha = Dense(1, use_bias=True, dtype=self._variable_dtype, name='W_alpha')
-        self.W_beta = Dense(1, use_bias=True, dtype=self._variable_dtype, name='W_beta')
-        self.W_gamma = Dense(1, use_bias=True, dtype=self._variable_dtype, name='W_gamma')
+        self.W_alpha = Dense(1, use_bias=True, dtype=self.emsc_variable_dtype, name='W_alpha')
+        self.W_beta = Dense(1, use_bias=True, dtype=self.emsc_variable_dtype, name='W_beta')
+        self.W_gamma = Dense(1, use_bias=True, dtype=self.emsc_variable_dtype, name='W_gamma')
         
         # 3. 候选状态
-        self.W_c = Dense(state_dim, use_bias=True, dtype=self._variable_dtype, name='W_c')
+        self.W_c = Dense(state_dim, use_bias=True, dtype=self.emsc_variable_dtype, name='W_c')
         
         # 4. 输出层 (True_Stress)
-        self.W_out = Dense(1, use_bias=False, dtype=self._variable_dtype, name='W_out')
+        self.W_out = Dense(1, use_bias=False, dtype=self.emsc_variable_dtype, name='W_out')
     
     def calc_direction_vec(self, delta_features):
         """计算增量方向向量"""
@@ -151,10 +151,10 @@ class MSC_Sequence(tf.keras.layers.Layer):
         self.num_internal_layers = num_internal_layers
         self.max_sequence_length = max_sequence_length
         
-        # 获取当前策略的dtype（使用完全不同的属性名避免冲突）
-        self._mixed_precision_policy = tf.keras.mixed_precision.global_policy()
-        self._compute_dtype = self._mixed_precision_policy.compute_dtype
-        self._variable_dtype = self._mixed_precision_policy.variable_dtype
+        # 获取当前策略的dtype（使用完全自定义的属性名避免冲突）
+        mixed_precision_policy = tf.keras.mixed_precision.global_policy()
+        self.emsc_compute_dtype = mixed_precision_policy.compute_dtype
+        self.emsc_variable_dtype = mixed_precision_policy.variable_dtype
         
         self.msc_cell = MSC_Cell(
             state_dim=state_dim,
@@ -176,7 +176,7 @@ class MSC_Sequence(tf.keras.layers.Layer):
         
         # 使用动态dtype的TensorArray
         outputs = tf.TensorArray(
-            dtype=self._compute_dtype,  # 使用计算dtype
+            dtype=self.emsc_compute_dtype,  # 使用计算dtype
             size=sequence_length,
             dynamic_size=False,
             clear_after_read=False

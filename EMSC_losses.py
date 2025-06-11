@@ -27,10 +27,10 @@ class EMSCLoss(tf.keras.losses.Loss):
         self.state_dim = state_dim
         self.epoch = tf.Variable(0, trainable=False, dtype=tf.int32)
         
-        # 获取当前策略的dtype（使用不同的属性名避免冲突）
-        self._current_policy = tf.keras.mixed_precision.global_policy()
-        self.compute_dtype = self._current_policy.compute_dtype
-        self.variable_dtype = self._current_policy.variable_dtype
+        # 获取当前策略的dtype（使用完全自定义的属性名避免冲突）
+        mixed_precision_policy = tf.keras.mixed_precision.global_policy()
+        self.emsc_compute_dtype = mixed_precision_policy.compute_dtype
+        self.emsc_variable_dtype = mixed_precision_policy.variable_dtype
     
     def call(self, y_true, y_pred, gate_params=None):
         """
@@ -42,8 +42,8 @@ class EMSCLoss(tf.keras.losses.Loss):
         gate_params: 门控参数字典，包含 'alpha', 'beta', 'gamma' 序列
         """
         # 确保输入使用正确的dtype
-        y_true = tf.cast(y_true, self.compute_dtype)
-        y_pred = tf.cast(y_pred, self.compute_dtype)
+        y_true = tf.cast(y_true, self.emsc_compute_dtype)
+        y_pred = tf.cast(y_pred, self.emsc_compute_dtype)
         
         # 1. 计算MSE损失
         mse_loss = tf.reduce_mean(tf.square(y_true - y_pred))
@@ -52,9 +52,9 @@ class EMSCLoss(tf.keras.losses.Loss):
             return mse_loss
         
         # 2. 获取门控参数序列并确保正确的dtype
-        alpha_seq = tf.cast(gate_params['alpha'], self.compute_dtype)  # (batch_size, seq_len, state_dim)
-        beta_seq = tf.cast(gate_params['beta'], self.compute_dtype)    # (batch_size, seq_len, state_dim)
-        gamma_seq = tf.cast(gate_params['gamma'], self.compute_dtype)  # (batch_size, seq_len, state_dim)
+        alpha_seq = tf.cast(gate_params['alpha'], self.emsc_compute_dtype)  # (batch_size, seq_len, state_dim)
+        beta_seq = tf.cast(gate_params['beta'], self.emsc_compute_dtype)    # (batch_size, seq_len, state_dim)
+        gamma_seq = tf.cast(gate_params['gamma'], self.emsc_compute_dtype)  # (batch_size, seq_len, state_dim)
         
         # 3. 计算门控参数在序列上的平均值
         mean_alpha = tf.reduce_mean(alpha_seq, axis=1)  # (batch_size, state_dim)
@@ -68,7 +68,7 @@ class EMSCLoss(tf.keras.losses.Loss):
         
         # 5. 计算动态正则化权重
         # 1000个epoch内从1e-3降到1e-6，之后恒为1e-6
-        omega = tf.maximum(1e-6, 1e-3 - 9.99e-7 * tf.cast(self.epoch, self.compute_dtype))
+        omega = tf.maximum(1e-6, 1e-3 - 9.99e-7 * tf.cast(self.epoch, self.emsc_compute_dtype))
         
         # 6. 计算总损失
         total_loss = mse_loss + omega * reg_loss
