@@ -314,6 +314,26 @@ class CloudEnvironmentConfig:
     def get_data_config(self) -> Dict:
         """获取数据加载相关配置"""
         return {
+            # num_parallel_calls: 并行处理数据的工作线程数，使用AUTOTUNE时自动选择最优值
+            # prefetch_buffer_size: 预取缓冲区大小，用于提前加载下一批数据，提高训练效率
+            # cache_size: 数据缓存大小，用于缓存预处理后的数据，减少重复计算
+            # 2. num_parallel_calls: -1 (即 tf.data.AUTOTUNE)
+            # 含义：数据预处理的并行线程数自动调优
+            # TensorFlow 会自动决定：
+            # CPU 核心数
+            # I/O 瓶颈情况
+            # 数据预处理复杂度
+            # 内存使用情况
+            # 典型范围：通常会使用 2-8 个线程
+            # 3. prefetch_buffer_size: -1 (即 tf.data.AUTOTUNE)
+            # 含义：预取缓冲区大小自动调优
+            # TensorFlow 会自动决定：
+            # GPU/CPU 的处理速度比
+            # 内存可用量
+            # batch 大小
+            # 训练速度
+            # 作用：在 GPU 处理当前 batch 时，CPU 预先准备下几个 batch 的数据
+
             'num_parallel_calls': self.config['num_parallel_calls'],
             'prefetch_buffer_size': self.config['prefetch_buffer_size'],
             'cache_size': self.config['cache_size']
