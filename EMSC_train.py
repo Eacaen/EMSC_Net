@@ -20,6 +20,12 @@ try:
     CLOUD_OPTIMIZER_AVAILABLE = True
 except ImportError:
     CLOUD_OPTIMIZER_AVAILABLE = False
+
+try:
+    from EMSC_oss_downloader import auto_setup_dataset
+    OSS_DOWNLOADER_AVAILABLE = True
+except ImportError:
+    OSS_DOWNLOADER_AVAILABLE = False
 from EMSC_config import (create_training_config, save_training_config, 
                         parse_training_args, get_dataset_paths)
 from EMSC_utils import (load_or_create_model_with_history, 
@@ -198,10 +204,28 @@ def main():
     )
     save_training_config(training_config, dataset_dir)
     
+    # 自动获取数据集（优先从OSS下载）
+    print(f"🔍 自动获取数据集...")
+    
+    if OSS_DOWNLOADER_AVAILABLE:
+        try:
+            # 尝试自动从OSS下载数据集
+            actual_dataset_path = auto_setup_dataset(dataset_path)
+            print(f"✅ 数据集已就绪: {actual_dataset_path}")
+            dataset_path = actual_dataset_path
+        except Exception as e:
+            print(f"⚠️  OSS自动下载失败: {e}")
+            print(f"继续使用指定路径: {dataset_path}")
+    
     # 加载数据集
-    print(f"尝试加载数据集: {dataset_path}")
+    print(f"📂 加载数据集: {dataset_path}")
     X_paths, Y_paths = load_dataset_from_npz(dataset_path)
     if X_paths is None or Y_paths is None:
+        print(f"❌ 数据集加载失败!")
+        if OSS_DOWNLOADER_AVAILABLE:
+            print(f"💡 解决方案:")
+            print(f"   1. 配置OSS: python EMSC_Net/EMSC_oss_config.py") 
+            print(f"   2. 检查数据集路径: {dataset_path}")
         raise ValueError("未能成功加载数据集")
     
     # 准备训练数据
