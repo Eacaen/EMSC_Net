@@ -14,6 +14,7 @@ from EMSC_model import build_msc_model
 from EMSC_data import EMSCDataGenerator, create_tf_dataset, load_dataset_from_npz
 from EMSC_callbacks import MSCProgressCallback, create_early_stopping_callback, create_learning_rate_scheduler
 from EMSC_cpu_monitor import create_cpu_monitor_callback
+from EMSC_dynamic_batch import DynamicBatchTrainer, create_dynamic_batch_callback
 from EMSC_config import (create_training_config, save_training_config, 
                         parse_training_args, get_dataset_paths)
 from EMSC_utils import (load_or_create_model_with_history, 
@@ -364,7 +365,37 @@ def main():
         print(f"训练模式: {'GPU' if num_workers is None else 'CPU (多线程)'}")
         
         # 使用性能优化的训练配置 - 针对阿里云CPU优化
-        if num_workers is not None:  # CPU模式
+        if num_workers is not None and args.dynamic_batch:  # CPU模式 + 动态批次
+            print(f"🚀 启用动态批次大小调整 (目标CPU使用率: {args.target_cpu_usage}%)")
+            
+            # 使用动态批次训练器
+            dynamic_trainer = DynamicBatchTrainer(
+                model=model,
+                train_data_info=(X_train, Y_train, init_states_train),
+                val_data_info=(X_val, Y_val, init_states_val),
+                initial_batch_size=batch_size
+            )
+            
+            # 添加动态批次回调（替换CPU监控）
+            dynamic_callbacks = [progress_callback, early_stopping, lr_scheduler]
+            dynamic_callbacks.append(create_dynamic_batch_callback(
+                target_cpu_usage=args.target_cpu_usage,
+                min_batch_size=16,
+                max_batch_size=min(512, len(X_train)),
+                verbose=True
+            ))
+            
+            history = dynamic_trainer.fit(
+                epochs=args.epochs,
+                initial_epoch=epoch_offset,
+                verbose=1,
+                callbacks=dynamic_callbacks,
+                use_multiprocessing=True,
+                workers=min(num_workers, 32),
+                max_queue_size=max(20, num_workers * 2)
+            )
+            
+        elif num_workers is not None:  # CPU模式 - 传统训练
             # CPU训练配置 - 更激进的多进程设置
             max_queue = max(20, num_workers * 2)  # 增加队列大小
             cpu_workers = min(num_workers, 32)    # 限制最大进程数避免过度开销
@@ -388,7 +419,7 @@ def main():
                 epochs=args.epochs,
                 initial_epoch=epoch_offset,
                 verbose=1,
-                callbacks=[progress_callback, early_stopping, lr_scheduler],
+                callbacks=callbacks,
                 use_multiprocessing=False,
                 workers=1,
                 max_queue_size=10

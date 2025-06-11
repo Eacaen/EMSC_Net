@@ -83,6 +83,10 @@ def parse_training_args():
                        help='隐藏层维度 (默认: 32)')
     parser.add_argument('--monitor_cpu', action='store_true', default=False,
                        help='是否监控CPU使用率（仅CPU训练模式）')
+    parser.add_argument('--dynamic_batch', action='store_true', default=False,
+                       help='是否启用动态批次大小调整（根据CPU使用率）')
+    parser.add_argument('--target_cpu_usage', type=float, default=75.0,
+                       help='动态批次调整的目标CPU使用率 (默认: 75.0%%)')
     
     return parser.parse_args()
 
