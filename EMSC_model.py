@@ -23,10 +23,10 @@ class MSC_Cell(tf.keras.layers.Layer):
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         
-        # 获取当前策略的dtype
-        self.dtype_policy = tf.keras.mixed_precision.global_policy()
-        self.compute_dtype = self.dtype_policy.compute_dtype
-        self.variable_dtype = self.dtype_policy.variable_dtype
+        # 获取当前策略的dtype（使用不同的属性名避免冲突）
+        self._current_policy = tf.keras.mixed_precision.global_policy()
+        self.compute_dtype = self._current_policy.compute_dtype
+        self.variable_dtype = self._current_policy.variable_dtype
         
         # 1. 内部层 (tanh∘tanh 逐层)
         self.internal_layers = []
@@ -151,10 +151,10 @@ class MSC_Sequence(tf.keras.layers.Layer):
         self.num_internal_layers = num_internal_layers
         self.max_sequence_length = max_sequence_length
         
-        # 获取当前策略的dtype
-        self.dtype_policy = tf.keras.mixed_precision.global_policy()
-        self.compute_dtype = self.dtype_policy.compute_dtype
-        self.variable_dtype = self.dtype_policy.variable_dtype
+        # 获取当前策略的dtype（使用不同的属性名避免冲突）
+        self._current_policy = tf.keras.mixed_precision.global_policy()
+        self.compute_dtype = self._current_policy.compute_dtype
+        self.variable_dtype = self._current_policy.variable_dtype
         
         self.msc_cell = MSC_Cell(
             state_dim=state_dim,

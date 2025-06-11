@@ -27,10 +27,10 @@ class EMSCLoss(tf.keras.losses.Loss):
         self.state_dim = state_dim
         self.epoch = tf.Variable(0, trainable=False, dtype=tf.int32)
         
-        # 获取当前策略的dtype
-        self.dtype_policy = tf.keras.mixed_precision.global_policy()
-        self.compute_dtype = self.dtype_policy.compute_dtype
-        self.variable_dtype = self.dtype_policy.variable_dtype
+        # 获取当前策略的dtype（使用不同的属性名避免冲突）
+        self._current_policy = tf.keras.mixed_precision.global_policy()
+        self.compute_dtype = self._current_policy.compute_dtype
+        self.variable_dtype = self._current_policy.variable_dtype
     
     def call(self, y_true, y_pred, gate_params=None):
         """
