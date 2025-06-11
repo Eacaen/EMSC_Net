@@ -81,6 +81,8 @@ def parse_training_args():
                        help='状态向量维度 (默认: 8)')
     parser.add_argument('--hidden_dim', type=int, default=32,
                        help='隐藏层维度 (默认: 32)')
+    parser.add_argument('--monitor_cpu', action='store_true', default=False,
+                       help='是否监控CPU使用率（仅CPU训练模式）')
     
     return parser.parse_args()
 

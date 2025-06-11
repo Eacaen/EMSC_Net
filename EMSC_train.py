@@ -13,6 +13,7 @@ from tensorflow.keras import mixed_precision
 from EMSC_model import build_msc_model
 from EMSC_data import EMSCDataGenerator, create_tf_dataset, load_dataset_from_npz
 from EMSC_callbacks import MSCProgressCallback, create_early_stopping_callback, create_learning_rate_scheduler
+from EMSC_cpu_monitor import create_cpu_monitor_callback
 from EMSC_config import (create_training_config, save_training_config, 
                         parse_training_args, get_dataset_paths)
 from EMSC_utils import (load_or_create_model_with_history, 
@@ -56,21 +57,34 @@ def check_environment():
     if cpu_count is None:
         cpu_count = 4  # 默认值
     
-    # 设置线程数
-    # 保留CPU核心给系统和其他进程
-    num_workers = max(1, cpu_count - 1)  # 保留1个CPU核心给系统和其他进程
+    # 针对阿里云等云环境的CPU优化配置
+    # 使用所有可用CPU核心，不保留
+    num_workers = cpu_count
     
-    # 设置TensorFlow线程配置
+    # 设置TensorFlow线程配置 - 更激进的设置
     tf.config.threading.set_inter_op_parallelism_threads(num_workers)
     tf.config.threading.set_intra_op_parallelism_threads(num_workers)
     
-    # 设置OpenMP线程数（用于NumPy等库）
+    # 设置OpenMP线程数（用于NumPy、MKL等库）
     os.environ['OMP_NUM_THREADS'] = str(num_workers)
     os.environ['MKL_NUM_THREADS'] = str(num_workers)
+    os.environ['OPENBLAS_NUM_THREADS'] = str(num_workers)
+    os.environ['NUMEXPR_NUM_THREADS'] = str(num_workers)
     
-    print(f"CPU环境配置完成:")
+    # 优化TensorFlow的CPU性能
+    os.environ['TF_NUM_INTEROP_THREADS'] = str(num_workers)
+    os.environ['TF_NUM_INTRAOP_THREADS'] = str(num_workers)
+    
+    # 启用所有CPU优化
+    os.environ['TF_ENABLE_ONEDNN_OPTS'] = '1'  # 启用OneDNN优化
+    
+    print(f"阿里云CPU环境优化配置完成:")
     print(f"- 总CPU核心数: {cpu_count}")
     print(f"- 训练使用线程数: {num_workers}")
+    print(f"- inter_op_parallelism_threads: {num_workers}")
+    print(f"- intra_op_parallelism_threads: {num_workers}")
+    print(f"- OMP_NUM_THREADS: {num_workers}")
+    print(f"- 已启用OneDNN优化")
     
     # 检查内存使用情况
     try:
@@ -80,14 +94,19 @@ def check_environment():
         print(f"总内存: {memory.total / (1024**3):.1f} GB")
         print(f"可用内存: {memory.available / (1024**3):.1f} GB")
         print(f"内存使用率: {memory.percent}%")
+        
+        # 显示CPU信息
+        print(f"\nCPU信息:")
+        print(f"物理CPU核心数: {psutil.cpu_count(logical=False)}")
+        print(f"逻辑CPU核心数: {psutil.cpu_count(logical=True)}")
     except ImportError:
-        print("未安装psutil，跳过内存检查")
+        print("未安装psutil，跳过系统信息检查")
     
     return num_workers
 
 def get_optimal_batch_size(num_samples, num_workers):
     """
-    计算最优批处理大小
+    计算最优批处理大小 - 针对阿里云CPU环境优化
     
     Args:
         num_samples: 训练样本数量
@@ -100,15 +119,29 @@ def get_optimal_batch_size(num_samples, num_workers):
         # GPU模式下使用较大的批处理大小
         return min(128, num_samples // 50)
     
-    # CPU模式下的批处理大小计算
-    base_batch = min(32, num_samples // 100)
-    base_batch = max(8, base_batch)
+    # CPU模式下的批处理大小计算 - 更积极的配置
+    # 基础批次大小 - 为CPU训练增加更大的基数
+    base_batch = min(64, max(32, num_samples // 50))  # 增加基础批次大小
     
-    # 根据CPU线程数调整
-    optimal_batch = base_batch * num_workers
+    # 根据CPU线程数调整 - 让每个线程处理更多数据
+    # 使用更激进的倍数，充分利用多核CPU
+    if num_workers >= 16:  # 高核心数CPU（阿里云高配）
+        multiplier = 2
+    elif num_workers >= 8:  # 中等核心数CPU
+        multiplier = 3
+    else:  # 低核心数CPU
+        multiplier = 4
     
-    # 确保是8的倍数（对内存对齐有利）
+    optimal_batch = base_batch * multiplier
+    
+    # 确保批次大小合理
+    optimal_batch = min(optimal_batch, num_samples)  # 不超过样本总数
+    optimal_batch = max(16, optimal_batch)  # 最小16
+    
+    # 确保是8的倍数（对内存对齐和向量化有利）
     optimal_batch = (optimal_batch // 8) * 8
+    
+    print(f"CPU批次大小计算: 基础={base_batch}, 线程数={num_workers}, 倍数={multiplier}, 最终={optimal_batch}")
     
     return optimal_batch
 
@@ -116,8 +149,10 @@ def main():
     # 检查并配置环境
     num_workers = check_environment()
     
-    # 设置TensorFlow的默认数据类型
+    # 强制禁用混合精度，确保CPU和GPU数值一致性
+    tf.keras.mixed_precision.set_global_policy('float32')
     tf.keras.backend.set_floatx('float32')
+    print("强制使用float32精度训练（禁用混合精度）")
     
     # 解析命令行参数
     args = parse_training_args()
@@ -184,21 +219,31 @@ def main():
         batch_size = get_optimal_batch_size(len(X_train), num_workers)
         print(f"未指定batch_size，使用自动计算值: {batch_size}")
     
-    # 创建TensorFlow数据集
+    # 创建TensorFlow数据集 - 针对CPU优化数据加载并行度
     print("创建TensorFlow数据集...")
+    
+    # 为CPU训练优化数据并行度
+    if num_workers is not None:  # CPU模式
+        data_parallel_calls = min(num_workers, 16)  # 限制最大并行度避免过度竞争
+        prefetch_buffer = min(batch_size * 4, 64)  # 预取缓冲区
+        print(f"CPU优化: 数据并行度={data_parallel_calls}, 预取缓冲={prefetch_buffer}")
+    else:  # GPU模式
+        data_parallel_calls = tf.data.AUTOTUNE
+        prefetch_buffer = tf.data.AUTOTUNE
+    
     train_dataset = create_tf_dataset(
         X_train, Y_train, init_states_train,
         batch_size=batch_size,
         shuffle=True,
-        num_parallel_calls=tf.data.AUTOTUNE  # 自动优化并行度
-    )
+        num_parallel_calls=data_parallel_calls
+    ).prefetch(prefetch_buffer)
     
     val_dataset = create_tf_dataset(
         X_val, Y_val, init_states_val,
         batch_size=batch_size,
         shuffle=False,
-        num_parallel_calls=tf.data.AUTOTUNE
-    )
+        num_parallel_calls=data_parallel_calls
+    ).prefetch(prefetch_buffer)
     
     print(f"数据加载配置:")
     print(f"- 最终使用的批处理大小: {batch_size}")
@@ -288,6 +333,17 @@ def main():
         verbose=1               # 打印学习率变化
     )
     
+    # 创建CPU监控回调（仅CPU训练模式且用户启用时）
+    cpu_monitor = None
+    if num_workers is not None and args.monitor_cpu:
+        cpu_monitor = create_cpu_monitor_callback(monitor_interval=30, verbose=True)
+        print("已启用CPU使用率监控")
+    
+    # 准备回调列表
+    callbacks = [progress_callback, early_stopping, lr_scheduler]
+    if cpu_monitor is not None:
+        callbacks.append(cpu_monitor)
+    
     # 训练模型
     remaining_epochs = args.epochs
     if remaining_epochs <= 0:
@@ -307,19 +363,36 @@ def main():
         print(f"验证数据大小: {len(X_val)}")
         print(f"训练模式: {'GPU' if num_workers is None else 'CPU (多线程)'}")
         
-        # 使用性能优化的训练配置
-        history = model.fit(
-            train_dataset,
-            validation_data=val_dataset,
-            epochs=args.epochs,
-            initial_epoch=epoch_offset,
-            verbose=1,
-            callbacks=[progress_callback, early_stopping, lr_scheduler],
-            # 仅在CPU模式下启用多进程
-            use_multiprocessing=num_workers is not None,
-            workers=num_workers if num_workers is not None else 1,
-            max_queue_size=10
-        )
+        # 使用性能优化的训练配置 - 针对阿里云CPU优化
+        if num_workers is not None:  # CPU模式
+            # CPU训练配置 - 更激进的多进程设置
+            max_queue = max(20, num_workers * 2)  # 增加队列大小
+            cpu_workers = min(num_workers, 32)    # 限制最大进程数避免过度开销
+            print(f"CPU训练配置: workers={cpu_workers}, max_queue_size={max_queue}")
+            
+            history = model.fit(
+                 train_dataset,
+                 validation_data=val_dataset,
+                 epochs=args.epochs,
+                 initial_epoch=epoch_offset,
+                 verbose=1,
+                 callbacks=callbacks,
+                 use_multiprocessing=True,  # 启用多进程
+                 workers=cpu_workers,
+                 max_queue_size=max_queue
+             )
+        else:  # GPU模式
+            history = model.fit(
+                train_dataset,
+                validation_data=val_dataset,
+                epochs=args.epochs,
+                initial_epoch=epoch_offset,
+                verbose=1,
+                callbacks=[progress_callback, early_stopping, lr_scheduler],
+                use_multiprocessing=False,
+                workers=1,
+                max_queue_size=10
+            )
         
         # 训练完成后最终保存
         print("\n训练完成，执行最终保存...")
