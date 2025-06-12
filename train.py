@@ -13,9 +13,6 @@ def main():
     # 解析命令行参数
     args = parse_training_args()
     
-    # 检查环境
-    check_environment()
-    
     # 获取数据集路径
     paths = get_dataset_paths(args.dataset)
     dataset_path = paths['dataset_path']
@@ -25,9 +22,9 @@ def main():
         print(f"错误: 数据集不存在: {dataset_path}")
         sys.exit(1)
     
-    # 导入并运行主训练脚本
+    # 导入并运行主训练脚本，传递args参数
     from EMSC_train import main as train_main
-    train_main()
+    train_main(args)
 
 if __name__ == '__main__':
     main()

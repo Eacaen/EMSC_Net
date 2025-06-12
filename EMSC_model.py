@@ -17,7 +17,7 @@ class MSC_Cell(tf.keras.layers.Layer):
     hidden_dim: 内部层维度 (l)
     num_internal_layers: 内部层数量
     """
-    def __init__(self, state_dim=5, input_dim=3, hidden_dim=32, num_internal_layers=2):
+    def __init__(self, state_dim=5, input_dim=6, hidden_dim=32, num_internal_layers=2):
         super().__init__()
         self.state_dim = state_dim
         self.input_dim = input_dim
@@ -169,13 +169,31 @@ class MSC_Sequence(tf.keras.layers.Layer):
             clear_after_read=False
         )
         
+        # 检测环境以优化while_loop参数
+        try:
+            # 尝试检测环境类型
+            from EMSC_train import detect_environment
+            env_type = detect_environment()
+            if env_type == 'local':
+                # 本地环境 - 降低并行迭代数减少内存压力
+                parallel_iters = 1
+                use_swap_memory = True
+            else:
+                # 云环境 - 使用更高的并行度
+                parallel_iters = 10
+                use_swap_memory = False
+        except:
+            # 默认配置（保守设置）
+            parallel_iters = 1
+            use_swap_memory = True
+        
         _, final_state, outputs = tf.while_loop(
             lambda t, *_: t < sequence_length,
             step_fn,
             [tf.constant(0), state_0, outputs],
             maximum_iterations=self.max_sequence_length,
-            parallel_iterations=10,
-            swap_memory=False
+            parallel_iterations=parallel_iters,
+            swap_memory=use_swap_memory
         )
         
         return tf.transpose(outputs.stack(), [1, 0, 2])

@@ -403,8 +403,8 @@ def create_early_stopping_callback():
     """创建早停回调"""
     return EarlyStopping(
         monitor='val_loss',      # 监控验证集损失值
-        patience=15,             # 容忍验证集损失15个epoch不改善
-        min_delta=1e-4,         # 最小改善阈值，损失改善需超过此值
+        patience=100,             # 容忍验证集损失15个epoch不改善
+        min_delta=1e-7,         # 最小改善阈值，损失改善需超过此值
         mode='min',             # 监控指标越小越好
         restore_best_weights=True,  # 训练结束时恢复最佳权重
         verbose=1               # 打印早停相关信息

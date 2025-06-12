@@ -34,50 +34,147 @@ from EMSC_utils import (load_or_create_model_with_history,
                        print_training_summary)
 from EMSC_losses import EMSCLoss
 
-def check_environment():
-    """检查并配置训练环境，优先使用GPU，回退到CPU"""
+def check_environment(device_preference='auto'):
+    """
+    检查并配置训练环境
+    
+    Args:
+        device_preference: 设备偏好 ('auto', 'gpu', 'cpu')
+                          - 'auto': 自动选择，GPU优先，回退到CPU
+                          - 'gpu': 强制使用GPU，如果不可用则报错
+                          - 'cpu': 强制使用CPU
+    """
     print("检查训练环境...")
     print(f"TensorFlow版本: {tf.__version__}")
     print(f"当前工作目录: {os.getcwd()}")
+    print(f"设备偏好: {device_preference}")
     
     # 检查GPU可用性
     gpus = tf.config.list_physical_devices('GPU')
-    if gpus:
-        print(f"发现 {len(gpus)} 个GPU设备:")
-        for gpu in gpus:
-            print(f"- {gpu}")
-            # 配置GPU内存增长
-            try:
-                tf.config.experimental.set_memory_growth(gpu, True)
-                print(f"已为 {gpu} 启用内存增长")
-            except RuntimeError as e:
-                print(f"配置GPU内存增长时出错: {e}")
-        
-        # 设置GPU为默认设备，并配置数值稳定性
-        try:
-            tf.config.set_visible_devices(gpus[0], 'GPU')
-            
-            # GPU数值稳定性配置
-            # 注意：不启用tf.debugging.enable_check_numerics()，因为它与XLA编译不兼容
-            # 我们通过其他方式确保数值稳定性（梯度裁剪、loss函数保护等）
-            print("ℹ️  GPU模式：跳过数值检查（XLA兼容性）")
-            
-            # 设置GPU浮点精度策略
-            tf.config.experimental.enable_tensor_float_32_execution(False)
-            print("✅ 已禁用TensorFloat-32以提高数值精度")
-            
-            # 注意：EMSC模型使用tf.while_loop，与XLA编译不兼容
-            # XLA要求静态图结构，但while_loop创建动态控制流
-            tf.config.optimizer.set_jit(False)
-            print("ℹ️  已禁用XLA JIT编译（EMSC while_loop兼容性）")
-            
-            print(f"使用GPU设备: {gpus[0]}")
-            return None  # 使用GPU时不需要返回worker数
-        except RuntimeError as e:
-            print(f"设置GPU设备时出错: {e}")
+    print(f"检测到的GPU设备: {len(gpus)}")
     
-    # 如果没有GPU或GPU设置失败，配置CPU环境
-    print("未发现GPU设备或GPU设置失败，将使用CPU训练")
+    # 根据用户偏好决定使用的设备
+    if device_preference == 'cpu':
+        print("🖥️  用户指定使用CPU，跳过GPU配置")
+        # 强制禁用GPU，即使有GPU也不使用
+        if gpus:
+            tf.config.set_visible_devices([], 'GPU')
+            print("✅ 已禁用所有GPU设备，强制使用CPU")
+        return setup_cpu_environment()
+    
+    elif device_preference == 'gpu':
+        print("🎮 用户指定强制使用GPU")
+        if not gpus:
+            raise RuntimeError("❌ 用户指定使用GPU，但未检测到任何GPU设备！")
+        return setup_gpu_environment(gpus)
+    
+    else:  # device_preference == 'auto'
+        print("🔄 自动设备选择模式 (GPU优先)")
+        if gpus:
+            return setup_gpu_environment(gpus)
+        else:
+            print("未发现GPU设备，自动切换到CPU训练")
+            return setup_cpu_environment()
+
+def detect_environment():
+    """
+    检测运行环境：本地 vs 云环境
+    
+    Returns:
+        str: 'local' 或 'cloud'
+    """
+    # 检测云环境的特征
+    cloud_indicators = [
+        '/mnt/data',  # 阿里云挂载路径
+        '/opt/ml',    # AWS SageMaker
+        '/kaggle',    # Kaggle
+    ]
+    
+    # 检查环境变量
+    env_cloud_indicators = [
+        'KUBERNETES_SERVICE_HOST',  # K8s环境
+        'CLOUD_SHELL',             # 云shell
+        'COLAB_GPU',               # Google Colab
+    ]
+    
+    # 检查路径指标
+    for indicator in cloud_indicators:
+        if os.path.exists(indicator):
+            return 'cloud'
+    
+    # 检查OSS配置文件
+    if os.path.exists('/mnt/data/msc_models/dataset_EMSC_big/oss_config.json'):
+        return 'cloud'
+    
+    # 检查环境变量
+    for env_var in env_cloud_indicators:
+        if os.environ.get(env_var):
+            return 'cloud'
+    
+    # 检查CPU核心数（云环境通常有更多核心）
+    cpu_count = os.cpu_count() or 4
+    if cpu_count >= 32:  # 高核心数可能是云环境
+        print(f"🔍 检测到高核心数CPU ({cpu_count})，可能是云环境")
+    
+    return 'local'
+
+def setup_gpu_environment(gpus):
+    """设置GPU训练环境 - 区分本地和云环境"""
+    env_type = detect_environment()
+    print(f"🎮 配置GPU训练环境 ({env_type})")
+    print(f"发现 {len(gpus)} 个GPU设备:")
+    
+    for gpu in gpus:
+        print(f"- {gpu}")
+        # 配置GPU内存增长
+        try:
+            tf.config.experimental.set_memory_growth(gpu, True)
+            print(f"已为 {gpu} 启用内存增长")
+        except RuntimeError as e:
+            print(f"配置GPU内存增长时出错: {e}")
+    
+    # 设置GPU为默认设备
+    try:
+        tf.config.set_visible_devices(gpus[0], 'GPU')
+        
+        if env_type == 'local':
+            # 本地GPU优化配置
+            print("🏠 本地GPU环境优化:")
+            
+            # 本地环境启用TF32以提升性能
+            tf.config.experimental.enable_tensor_float_32_execution(True)
+            print("✅ 启用TensorFloat-32（本地GPU性能优化）")
+            
+            # 本地环境的线程配置
+            tf.config.threading.set_inter_op_parallelism_threads(0)  # 使用默认
+            tf.config.threading.set_intra_op_parallelism_threads(0)  # 使用默认
+            print("✅ 使用默认线程配置（本地GPU优化）")
+            
+        else:
+            # 云GPU优化配置
+            print("☁️  云GPU环境优化:")
+            
+            # 云环境禁用TF32以提高精度稳定性
+            tf.config.experimental.enable_tensor_float_32_execution(False)
+            print("✅ 禁用TensorFloat-32（云环境精度优先）")
+            
+            # 云环境的线程配置（更保守）
+            tf.config.threading.set_inter_op_parallelism_threads(4)
+            tf.config.threading.set_intra_op_parallelism_threads(8)
+            print("✅ 配置保守线程设置（云环境稳定性优先）")
+        
+        # 通用GPU配置
+        tf.config.optimizer.set_jit(False)
+        print("ℹ️  禁用XLA JIT编译（EMSC while_loop兼容性）")
+        
+        print(f"✅ GPU环境配置完成: {gpus[0]}")
+        return None  # 使用GPU时不需要返回worker数
+    except RuntimeError as e:
+        raise RuntimeError(f"❌ GPU设备配置失败: {e}")
+
+def setup_cpu_environment():
+    """设置CPU训练环境"""
+    print("🖥️  配置CPU训练环境")
     
     # 获取CPU核心数
     cpu_count = os.cpu_count()
@@ -133,7 +230,7 @@ def check_environment():
 
 def get_optimal_batch_size(num_samples, num_workers):
     """
-    计算最优批处理大小 - 针对阿里云CPU环境优化
+    计算最优批处理大小 - 区分本地和云环境
     
     Args:
         num_samples: 训练样本数量
@@ -143,8 +240,19 @@ def get_optimal_batch_size(num_samples, num_workers):
         int: 最优批处理大小
     """
     if num_workers is None:  # GPU模式
-        # GPU模式下使用较大的批处理大小
-        return min(128, num_samples // 50)
+        env_type = detect_environment()
+        
+        if env_type == 'local':
+            # 本地GPU环境 - 使用中等批处理大小
+            base_batch = min(64, max(16, num_samples // 100))  # 更保守的基础大小
+            batch_size = base_batch
+            print(f"本地GPU批次大小: {batch_size}")
+        else:
+            # 云GPU环境 - 使用较大的批处理大小
+            batch_size = min(128, num_samples // 50)
+            print(f"云GPU批次大小: {batch_size}")
+        
+        return (batch_size // 8) * 8  # 确保是8的倍数
     
     # CPU模式下的批处理大小计算 - 更积极的配置
     # 基础批次大小 - 为CPU训练增加更大的基数
@@ -172,17 +280,56 @@ def get_optimal_batch_size(num_samples, num_workers):
     
     return optimal_batch
 
-def main():
+def warmup_gpu_model(model, sample_batch_size=1, max_sequence_length=100):
+    """
+    GPU模型预热，预编译tf.while_loop图
+    解决第一次执行时的长时间卡顿问题
+    """
+    print("🔥 GPU模型预热中...")
+    
+    try:
+        # 创建小规模的样本数据进行预热
+        warmup_input = tf.random.normal((sample_batch_size, max_sequence_length, 6), dtype=tf.float32)
+        warmup_init_state = tf.zeros((sample_batch_size, 8), dtype=tf.float32)
+        
+        # 第一次前向传播 - 编译while_loop图
+        print("  🔄 执行第一次前向传播（图编译）...")
+        start_time = tf.timestamp()
+        
+        _ = model([warmup_input, warmup_init_state], training=False)
+        
+        compile_time = tf.timestamp() - start_time
+        print(f"  ✅ 图编译完成，耗时: {compile_time:.2f}秒")
+        
+        # 第二次前向传播 - 验证编译效果
+        print("  🔄 执行第二次前向传播（验证加速）...")
+        start_time = tf.timestamp()
+        
+        _ = model([warmup_input, warmup_init_state], training=False)
+        
+        exec_time = tf.timestamp() - start_time
+        print(f"  ⚡ 执行时间: {exec_time:.2f}秒")
+        
+        print("🎉 GPU模型预热完成！训练将立即开始")
+        return True
+        
+    except Exception as e:
+        print(f"⚠️  GPU预热失败: {e}")
+        print("继续训练，但第一个epoch可能较慢...")
+        return False
+
+def main(args=None):
+    # 解析命令行参数（如果没有传入则解析）
+    if args is None:
+        args = parse_training_args()
+    
     # 检查并配置环境
-    num_workers = check_environment()
+    num_workers = check_environment(device_preference=args.device)
     
     # 强制禁用混合精度，确保CPU和GPU数值一致性
     tf.keras.mixed_precision.set_global_policy('float32')
     tf.keras.backend.set_floatx('float32')
     print("强制使用float32精度训练（禁用混合精度）")
-    
-    # 解析命令行参数
-    args = parse_training_args()
     
     # 云环境I/O优化
     cloud_optimizer = None
@@ -201,7 +348,17 @@ def main():
     
     # 获取数据集路径
     paths = get_dataset_paths(args.dataset)
-    dataset_dir = paths['dataset_dir']
+    base_dataset_dir = paths['dataset_dir']
+    
+    # 根据网络结构创建子文件夹
+    network_structure = f"6-{args.hidden_dim}-{args.hidden_dim}-{args.state_dim}-1"
+    dataset_dir = os.path.join(base_dataset_dir, f"network_{network_structure}")
+    
+    # 确保目录存在
+    os.makedirs(dataset_dir, exist_ok=True)
+    print(f"网络结构: {network_structure}")
+    print(f"模型保存目录: {dataset_dir}")
+    
     model_name = paths['model_name']
     best_model_name = paths['best_model_name']
     dataset_path = paths['dataset_path']
@@ -212,7 +369,6 @@ def main():
         input_dim=6,
         hidden_dim=args.hidden_dim,
         learning_rate=args.learning_rate,
-        target_sequence_length=1000,
         epochs=args.epochs,
         batch_size=args.batch_size,
         save_frequency=args.save_frequency
@@ -362,14 +518,23 @@ def main():
         monitor_cloud_performance()
         
     else:
-        # 标准数据集创建 - 针对CPU优化数据加载并行度
+        # 标准数据集创建 - 区分环境优化数据加载并行度
         if num_workers is not None:  # CPU模式
             data_parallel_calls = min(num_workers, 16)  # 限制最大并行度避免过度竞争
             prefetch_buffer = min(batch_size * 4, 64)  # 预取缓冲区
             print(f"CPU优化: 数据并行度={data_parallel_calls}, 预取缓冲={prefetch_buffer}")
         else:  # GPU模式
-            data_parallel_calls = tf.data.AUTOTUNE
-            prefetch_buffer = tf.data.AUTOTUNE
+            env_type = detect_environment()
+            if env_type == 'local':
+                # 本地GPU环境 - 使用较小的并行度和缓冲区
+                data_parallel_calls = 4  # 本地环境使用固定并行度
+                prefetch_buffer = max(2, batch_size // 8)  # 较小的预取缓冲
+                print(f"本地GPU优化: 数据并行度={data_parallel_calls}, 预取缓冲={prefetch_buffer}")
+            else:
+                # 云GPU环境 - 使用自动调优
+                data_parallel_calls = tf.data.AUTOTUNE
+                prefetch_buffer = tf.data.AUTOTUNE
+                print(f"云GPU优化: 使用AUTOTUNE")
         
         train_dataset = create_tf_dataset(
             X_train, Y_train, init_states_train,
@@ -456,6 +621,17 @@ def main():
     if is_new_model:
         model.summary()
     
+    # GPU模型预热（仅限GPU模式）
+    if num_workers is None:  # GPU模式
+        env_type = detect_environment()
+        if env_type == 'local':
+            # 本地GPU需要预热来避免卡顿
+            print("🏠 本地GPU环境 - 执行模型预热")
+            warmup_gpu_model(model, sample_batch_size=1, max_sequence_length=min(200, max_seq_length))
+        else:
+            # 云GPU环境可选预热
+            print("☁️  云GPU环境 - 跳过预热（可选优化）")
+    
     # 创建回调
     progress_callback = MSCProgressCallback(
         save_path=dataset_dir,
@@ -473,7 +649,7 @@ def main():
         decay_steps=args.epochs,  # 总epochs数
         decay_rate=0.9,          # 指数衰减率（当使用exponential时）
         min_learning_rate=1e-6,  # 最小学习率
-        patience=5,              # 验证损失不改善的容忍轮数
+        patience=min(int(args.epochs/50),50),              # 验证损失不改善的容忍轮数
         factor=0.5,             # 学习率衰减因子
         verbose=1               # 打印学习率变化
     )
@@ -508,11 +684,18 @@ def main():
         print(f"模型保存路径: {dataset_dir}")
         print(f"训练数据大小: {len(X_train)}")
         print(f"验证数据大小: {len(X_val)}")
-        print(f"训练模式: {'GPU (优化)' if num_workers is None else 'CPU (多线程)'}")
+        env_info = f"({'本地' if detect_environment() == 'local' else '云'})" if num_workers is None else ""
+        print(f"训练模式: {'GPU ' + env_info if num_workers is None else 'CPU (多线程)'}")
         if num_workers is None:
-            print(f"GPU优化设置:")
+            env_type = detect_environment()
+            print(f"GPU优化设置 ({env_type}):")
             print(f"  - XLA JIT编译: 已禁用 (while_loop兼容性)")
-            print(f"  - TensorFloat-32: 已禁用 (精度优先)")
+            if env_type == 'local':
+                print(f"  - TensorFloat-32: 已启用 (本地性能优化)")
+                print(f"  - 线程配置: 使用默认 (本地优化)")
+            else:
+                print(f"  - TensorFloat-32: 已禁用 (云环境精度优先)")
+                print(f"  - 线程配置: 保守设置 (云环境稳定性)")
             print(f"  - 梯度裁剪: clipnorm=1.0, clipvalue=0.5")
             print(f"  - 数值稳定性: EMSCLoss保护 + 梯度裁剪")
         
@@ -565,17 +748,35 @@ def main():
                  max_queue_size=max_queue
              )
         else:  # GPU模式
-            history = model.fit(
-                train_dataset,
-                validation_data=val_dataset,
-                epochs=args.epochs,
-                initial_epoch=epoch_offset,
-                verbose=1,
-                callbacks=callbacks,
-                use_multiprocessing=False,
-                workers=1,
-                max_queue_size=10
-            )
+            env_type = detect_environment()
+            if env_type == 'local':
+                # 本地GPU训练配置 - 优化性能
+                print(f"🏠 本地GPU训练配置: 禁用多进程，优化内存使用")
+                history = model.fit(
+                    train_dataset,
+                    validation_data=val_dataset,
+                    epochs=args.epochs,
+                    initial_epoch=epoch_offset,
+                    verbose=1,
+                    callbacks=callbacks,
+                    use_multiprocessing=False,  # 本地GPU避免多进程竞争
+                    workers=1,                  # 单工作线程
+                    max_queue_size=2            # 较小的队列减少内存占用
+                )
+            else:
+                # 云GPU训练配置 - 标准设置
+                print(f"☁️  云GPU训练配置: 标准设置")
+                history = model.fit(
+                    train_dataset,
+                    validation_data=val_dataset,
+                    epochs=args.epochs,
+                    initial_epoch=epoch_offset,
+                    verbose=1,
+                    callbacks=callbacks,
+                    use_multiprocessing=False,
+                    workers=1,
+                    max_queue_size=10
+                )
         
         # 训练完成后最终保存
         print("\n训练完成，执行最终保存...")

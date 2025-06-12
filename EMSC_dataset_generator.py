@@ -915,18 +915,18 @@ def main():
     # 示例用法
     data_dir = "/Users/tianyunhu/Documents/temp/CTC/PPCC"  # 替换为实际的数据目录
     save_dir = "/Users/tianyunhu/Documents/temp/code/Test_app/EMSC_Model/msc_models"  # 替换为实际的保存目录
-    dataset_name = 'dataset_EMSC_tt'
+    dataset_name = 'dataset_EMSC_big'
 
     # 获取数据文件列表
-    file_list = glob.glob(os.path.join(data_dir, "*.xlsx"))[0:100]
+    file_list = glob.glob(os.path.join(data_dir, "*.xlsx"))
     
     if not file_list:
         print(f"在 {data_dir} 中未找到数据文件")
         return
     
     # 创建数据集生成器
-    target_sequence_length = 1000
-    window_size = 1000
+    target_sequence_length = 5000
+    window_size = target_sequence_length
     stride = 500
     max_subsequences = 200
     
@@ -936,7 +936,7 @@ def main():
         window_size=window_size,
         stride=stride,
         max_subsequences=max_subsequences,
-        normalize=False,          # 启用归一化
+        normalize=True,          # 启用归一化
         scaler_type='minmax'     # 使用MinMax归一化
     )
     

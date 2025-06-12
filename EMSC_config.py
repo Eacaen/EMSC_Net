@@ -8,26 +8,17 @@ import json
 import argparse
 
 def create_training_config(state_dim=8, input_dim=6, hidden_dim=32, learning_rate=1e-3, 
-                         target_sequence_length=5000, window_size=None, stride=None, 
-                         max_subsequences=200, train_test_split_ratio=0.8, random_seed=42,
+                         train_test_split_ratio=0.8, random_seed=42,
                          epochs=500, batch_size=8, save_frequency=1):
     """
     创建训练配置字典
+    只包含训练过程中实际使用的参数
     """
-    if window_size is None:
-        window_size = target_sequence_length
-    if stride is None:
-        stride = target_sequence_length // 10
-        
     config = {
         'STATE_DIM': state_dim,
         'INPUT_DIM': input_dim,
         'HIDDEN_DIM': hidden_dim,
         'LEARNING_RATE': learning_rate,
-        'TARGET_SEQUENCE_LENGTH': target_sequence_length,
-        'WINDOW_SIZE': window_size,
-        'STRIDE': stride,
-        'MAX_SUBSEQUENCES': max_subsequences,
         'train_test_split_ratio': train_test_split_ratio,
         'random_seed': random_seed,
         'epochs': epochs,
@@ -91,6 +82,8 @@ def parse_training_args():
                        help='运行CPU性能诊断测试')
     parser.add_argument('--cloud_io_optimize', action='store_true', default=False,
                        help='启用阿里云I/O优化（解决CPU使用率低问题）')
+    parser.add_argument('--device', type=str, default='auto', choices=['auto', 'gpu', 'cpu'],
+                       help='指定使用的设备类型: auto(自动选择，GPU优先), gpu(强制GPU), cpu(强制CPU) (默认: auto)')
     
     return parser.parse_args()
 

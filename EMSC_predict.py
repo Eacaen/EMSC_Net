@@ -402,10 +402,10 @@ if __name__ == '__main__':
     # 模型参数配置
     state_dim = 8
     input_dim = 6  # [delta_strain, delta_time, delta_temperature, init_strain, init_time, init_temp]
-    window_size = 1000
+    window_size = 5000
     
     # 1. 加载模型和标准化器
-    model_dir = '/Users/tianyunhu/Documents/temp/code/Test_app/EMSC_Model/msc_models/dataset_EMSC_big/best_msc_model'  
+    model_dir = '/Users/tianyunhu/Documents/temp/code/Test_app/EMSC_Model/msc_models/dataset_EMSC_big/network_6-32-32-8-1/best_msc_model'  
     scaler_dir = '/Users/tianyunhu/Documents/temp/code/Test_app/EMSC_Model/msc_models/dataset_EMSC_big/scalers'
     x_scaler_path = os.path.join(scaler_dir, 'x_scaler.save')
     y_scaler_path = os.path.join(scaler_dir, 'y_scaler.save')
