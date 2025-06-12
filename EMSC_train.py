@@ -53,9 +53,19 @@ def check_environment():
             except RuntimeError as e:
                 print(f"配置GPU内存增长时出错: {e}")
         
-        # 设置GPU为默认设备
+        # 设置GPU为默认设备，并配置数值稳定性
         try:
             tf.config.set_visible_devices(gpus[0], 'GPU')
+            
+            # GPU数值稳定性配置
+            # 启用GPU数值检查
+            tf.debugging.enable_check_numerics()
+            print("✅ 已启用GPU数值稳定性检查")
+            
+            # 设置GPU浮点精度策略
+            tf.config.experimental.enable_tensor_float_32_execution(False)
+            print("✅ 已禁用TensorFloat-32以提高数值精度")
+            
             print(f"使用GPU设备: {gpus[0]}")
             return None  # 使用GPU时不需要返回worker数
         except RuntimeError as e:
@@ -423,8 +433,12 @@ def main():
             max_sequence_length=max_seq_length
         )
     
-    # 编译模型
-    optimizer = Adam(args.learning_rate)
+    # 编译模型，添加梯度裁剪以提高数值稳定性
+    optimizer = Adam(
+        learning_rate=args.learning_rate,
+        clipnorm=1.0,      # 梯度裁剪，防止梯度爆炸
+        clipvalue=0.5      # 梯度值裁剪
+    )
     custom_loss = EMSCLoss(state_dim=args.state_dim)
     model.compile(
         optimizer=optimizer,
