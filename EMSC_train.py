@@ -22,7 +22,7 @@ except ImportError:
     CLOUD_OPTIMIZER_AVAILABLE = False
 
 try:
-    from EMSC_oss_downloader import auto_setup_dataset
+    from EMSC_oss_downloader import download_dataset
     OSS_DOWNLOADER_AVAILABLE = True
 except ImportError:
     OSS_DOWNLOADER_AVAILABLE = False
@@ -209,12 +209,18 @@ def main():
     
     if OSS_DOWNLOADER_AVAILABLE:
         try:
-            # 尝试自动从OSS下载数据集
-            actual_dataset_path = auto_setup_dataset(dataset_path)
-            print(f"✅ 数据集已就绪: {actual_dataset_path}")
-            dataset_path = actual_dataset_path
+            # 尝试从OSS下载数据集
+            oss_config_path = '/mnt/data/msc_models/dataset_EMSC_big/oss_config.json'
+            if os.path.exists(oss_config_path):
+                print(f"📥 使用OSS配置文件: {oss_config_path}")
+                actual_dataset_path = download_dataset(oss_config_path, dataset_path)
+                print(f"✅ 数据集已就绪: {actual_dataset_path}")
+                dataset_path = actual_dataset_path
+            else:
+                print(f"⚠️  OSS配置文件不存在: {oss_config_path}")
+                print(f"继续使用指定路径: {dataset_path}")
         except Exception as e:
-            print(f"⚠️  OSS自动下载失败: {e}")
+            print(f"⚠️  OSS下载失败: {e}")
             print(f"继续使用指定路径: {dataset_path}")
     
     # 加载数据集
@@ -224,7 +230,7 @@ def main():
         print(f"❌ 数据集加载失败!")
         if OSS_DOWNLOADER_AVAILABLE:
             print(f"💡 解决方案:")
-            print(f"   1. 配置OSS: python EMSC_Net/EMSC_oss_config.py") 
+            print(f"   1. 检查OSS配置文件: {oss_config_path}")
             print(f"   2. 检查数据集路径: {dataset_path}")
         raise ValueError("未能成功加载数据集")
     
