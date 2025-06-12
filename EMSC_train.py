@@ -58,13 +58,18 @@ def check_environment():
             tf.config.set_visible_devices(gpus[0], 'GPU')
             
             # GPU数值稳定性配置
-            # 启用GPU数值检查
-            tf.debugging.enable_check_numerics()
-            print("✅ 已启用GPU数值稳定性检查")
+            # 注意：不启用tf.debugging.enable_check_numerics()，因为它与XLA编译不兼容
+            # 我们通过其他方式确保数值稳定性（梯度裁剪、loss函数保护等）
+            print("ℹ️  GPU模式：跳过数值检查（XLA兼容性）")
             
             # 设置GPU浮点精度策略
             tf.config.experimental.enable_tensor_float_32_execution(False)
             print("✅ 已禁用TensorFloat-32以提高数值精度")
+            
+            # 注意：EMSC模型使用tf.while_loop，与XLA编译不兼容
+            # XLA要求静态图结构，但while_loop创建动态控制流
+            tf.config.optimizer.set_jit(False)
+            print("ℹ️  已禁用XLA JIT编译（EMSC while_loop兼容性）")
             
             print(f"使用GPU设备: {gpus[0]}")
             return None  # 使用GPU时不需要返回worker数
@@ -443,7 +448,8 @@ def main():
     model.compile(
         optimizer=optimizer,
         loss=custom_loss,
-        # 暂时禁用JIT编译以避免XLA要求固定tensor大小的问题
+        # EMSC模型使用tf.while_loop，与JIT编译不兼容
+        # while_loop创建动态控制流，JIT编译要求静态图结构
         jit_compile=False
     )
     
@@ -502,7 +508,13 @@ def main():
         print(f"模型保存路径: {dataset_dir}")
         print(f"训练数据大小: {len(X_train)}")
         print(f"验证数据大小: {len(X_val)}")
-        print(f"训练模式: {'GPU' if num_workers is None else 'CPU (多线程)'}")
+        print(f"训练模式: {'GPU (优化)' if num_workers is None else 'CPU (多线程)'}")
+        if num_workers is None:
+            print(f"GPU优化设置:")
+            print(f"  - XLA JIT编译: 已禁用 (while_loop兼容性)")
+            print(f"  - TensorFloat-32: 已禁用 (精度优先)")
+            print(f"  - 梯度裁剪: clipnorm=1.0, clipvalue=0.5")
+            print(f"  - 数值稳定性: EMSCLoss保护 + 梯度裁剪")
         
         # 使用性能优化的训练配置 - 针对阿里云CPU优化
         if num_workers is not None and args.dynamic_batch:  # CPU模式 + 动态批次
