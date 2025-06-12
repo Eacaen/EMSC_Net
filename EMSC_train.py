@@ -204,35 +204,94 @@ def main():
     )
     save_training_config(training_config, dataset_dir)
     
-    # 自动获取数据集（优先从OSS下载）
-    print(f"🔍 自动获取数据集...")
+    # 数据集优先级策略
+    print(f"🔍 数据集优先级检查...")
     
-    if OSS_DOWNLOADER_AVAILABLE:
-        try:
-            # 尝试从OSS下载数据集
-            oss_config_path = '/mnt/data/msc_models/dataset_EMSC_big/oss_config.json'
-            if os.path.exists(oss_config_path):
-                print(f"📥 使用OSS配置文件: {oss_config_path}")
-                actual_dataset_path = download_dataset(oss_config_path, dataset_path)
-                print(f"✅ 数据集已就绪: {actual_dataset_path}")
-                dataset_path = actual_dataset_path
+    # 检查是否为云环境（通过OSS配置文件存在判断）
+    oss_config_path = '/mnt/data/msc_models/dataset_EMSC_big/oss_config.json'
+    is_cloud_environment = os.path.exists(oss_config_path)
+    
+    if is_cloud_environment:
+        print(f"🌥️  检测到云环境，启用云数据集优先级策略")
+        
+        # 云环境优先级：当前目录 -> OSS下载 -> OSS内路径
+        current_dir_dataset = os.path.join(os.getcwd(), os.path.basename(dataset_path))
+        oss_internal_path = "/mnt/data/msc_models/dataset_EMSC_big/dataset_EMSC_big.npz"
+        
+        print(f"优先级1: 当前目录 - {current_dir_dataset}")
+        print(f"优先级2: OSS下载到当前目录")
+        print(f"优先级3: OSS内路径 - {oss_internal_path}")
+        
+        # 优先级1: 检查当前运行目录
+        if os.path.exists(current_dir_dataset):
+            file_size = os.path.getsize(current_dir_dataset)
+            print(f"✅ 使用当前目录数据集: {current_dir_dataset}")
+            print(f"   文件大小: {file_size / (1024*1024):.1f}MB")
+            dataset_path = current_dir_dataset
+        
+        # 优先级2: 从OSS下载到当前目录
+        elif OSS_DOWNLOADER_AVAILABLE:
+            try:
+                print(f"📥 当前目录无数据集，尝试从OSS下载...")
+                print(f"OSS配置文件: {oss_config_path}")
+                print(f"下载到: {current_dir_dataset}")
+                
+                downloaded_path = download_dataset(oss_config_path, current_dir_dataset)
+                print(f"✅ 数据集下载完成: {downloaded_path}")
+                dataset_path = downloaded_path
+                
+            except Exception as e:
+                print(f"⚠️  OSS下载失败: {e}")
+                
+                # 优先级3: 使用OSS内路径
+                if os.path.exists(oss_internal_path):
+                    file_size = os.path.getsize(oss_internal_path)
+                    print(f"✅ 使用OSS内路径数据集: {oss_internal_path}")
+                    print(f"   文件大小: {file_size / (1024*1024):.1f}MB")
+                    dataset_path = oss_internal_path
+                else:
+                    print(f"❌ OSS内路径也不存在: {oss_internal_path}")
+                    raise ValueError(f"所有数据集路径都不可用")
+        
+        # 如果OSS下载器不可用，直接尝试OSS内路径
+        else:
+            if os.path.exists(oss_internal_path):
+                file_size = os.path.getsize(oss_internal_path)
+                print(f"✅ OSS下载器不可用，使用OSS内路径: {oss_internal_path}")
+                print(f"   文件大小: {file_size / (1024*1024):.1f}MB")
+                dataset_path = oss_internal_path
             else:
-                print(f"⚠️  OSS配置文件不存在: {oss_config_path}")
-                print(f"继续使用指定路径: {dataset_path}")
-        except Exception as e:
-            print(f"⚠️  OSS下载失败: {e}")
-            print(f"继续使用指定路径: {dataset_path}")
+                print(f"❌ OSS内路径不存在: {oss_internal_path}")
+                raise ValueError(f"数据集不可用，OSS下载器不可用且OSS内路径不存在")
+    
+    else:
+        # 单机环境：直接使用给定路径
+        print(f"💻 检测到单机环境，使用给定路径")
+        print(f"数据集路径: {dataset_path}")
+        
+        if os.path.exists(dataset_path):
+            file_size = os.path.getsize(dataset_path)
+            print(f"✅ 使用指定数据集: {dataset_path}")
+            print(f"   文件大小: {file_size / (1024*1024):.1f}MB")
+        else:
+            print(f"❌ 指定的数据集不存在: {dataset_path}")
+            raise ValueError(f"数据集不存在: {dataset_path}")
     
     # 加载数据集
     print(f"📂 加载数据集: {dataset_path}")
     X_paths, Y_paths = load_dataset_from_npz(dataset_path)
     if X_paths is None or Y_paths is None:
         print(f"❌ 数据集加载失败!")
-        if OSS_DOWNLOADER_AVAILABLE:
-            print(f"💡 解决方案:")
-            print(f"   1. 检查OSS配置文件: {oss_config_path}")
-            print(f"   2. 检查数据集路径: {dataset_path}")
-        raise ValueError("未能成功加载数据集")
+        print(f"💡 解决方案:")
+        print(f"   1. 检查数据集文件是否完整: {dataset_path}")
+        if is_cloud_environment:
+            print(f"   2. 删除当前目录的数据集文件，重新从OSS下载")
+            print(f"   3. 检查OSS配置文件: {oss_config_path}")
+            print(f"   4. 检查OSS内路径: /mnt/data/msc_models/dataset_EMSC_big/dataset_EMSC_big.npz")
+        else:
+            print(f"   2. 检查数据集路径是否正确")
+            print(f"   3. 确认数据集文件格式正确")
+        raise ValueError("数据集加载失败")
     
     # 准备训练数据
     print("准备训练序列...")
