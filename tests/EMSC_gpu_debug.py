@@ -5,7 +5,11 @@ GPU数值稳定性诊断工具
 
 import tensorflow as tf
 import numpy as np
-from EMSC_losses import EMSCLoss
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from core.EMSC_losses import EMSCLoss
 
 
 class GPUNumericalDiagnostic:

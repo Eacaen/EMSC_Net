@@ -7,7 +7,10 @@ import threading
 import time
 import numpy as np
 import tensorflow as tf
+import sys
+import os
 from typing import Optional, Callable
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 class DynamicBatchSizeCallback(tf.keras.callbacks.Callback):
@@ -232,7 +235,7 @@ class DynamicBatchTrainer:
     
     def _rebuild_datasets(self):
         """重建数据集"""
-        from EMSC_data import create_tf_dataset
+        from core.EMSC_data import create_tf_dataset
         
         X_train, Y_train, init_states_train = self.train_data_info
         X_val, Y_val, init_states_val = self.val_data_info

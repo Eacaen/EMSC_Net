@@ -5,7 +5,7 @@
 import os
 import time
 from pathlib import Path
-from EMSC_oss_config import load_oss_config
+from .EMSC_oss_config import load_oss_config
 
 
 class OSSDatasetDownloader:

@@ -8,31 +8,39 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras import mixed_precision
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# 导入自定义模块
-from EMSC_model import build_msc_model
-from EMSC_data import EMSCDataGenerator, create_tf_dataset, load_dataset_from_npz
-from EMSC_callbacks import MSCProgressCallback, create_early_stopping_callback, create_learning_rate_scheduler
-from EMSC_cpu_monitor import create_cpu_monitor_callback
-from EMSC_dynamic_batch import DynamicBatchTrainer, create_dynamic_batch_callback
+# 导入自定义模块    
+from core.EMSC_model import build_msc_model
+from core.EMSC_data import EMSCDataGenerator, create_tf_dataset, load_dataset_from_npz
+from training.EMSC_callbacks import MSCProgressCallback, create_early_stopping_callback, create_learning_rate_scheduler
+from training.EMSC_cpu_monitor import create_cpu_monitor_callback
+from training.EMSC_dynamic_batch import DynamicBatchTrainer, create_dynamic_batch_callback
 try:
-    from EMSC_cloud_io_optimizer import CloudIOOptimizer, create_cloud_optimized_training_config
+    from cloud.EMSC_cloud_io_optimizer import CloudIOOptimizer, create_cloud_optimized_training_config
     CLOUD_OPTIMIZER_AVAILABLE = True
 except ImportError:
     CLOUD_OPTIMIZER_AVAILABLE = False
 
 try:
-    from EMSC_oss_downloader import download_dataset
+    from cloud.EMSC_oss_downloader import download_dataset
     OSS_DOWNLOADER_AVAILABLE = True
 except ImportError:
     OSS_DOWNLOADER_AVAILABLE = False
-from EMSC_config import (create_training_config, save_training_config, 
+
+try:
+    from cloud.EMSC_oss_uploader import EMSCOSSUploader
+    OSS_UPLOADER_AVAILABLE = True
+except ImportError:
+    OSS_UPLOADER_AVAILABLE = False
+from utils.EMSC_config import (create_training_config, save_training_config, 
                         parse_training_args, get_dataset_paths)
-from EMSC_utils import (load_or_create_model_with_history, 
+from utils.EMSC_utils import (load_or_create_model_with_history, 
                        resume_training_from_checkpoint,
                        plot_final_training_summary,
                        print_training_summary)
-from EMSC_losses import EMSCLoss
+from core.EMSC_losses import EMSCLoss
 
 def check_environment(device_preference='auto'):
     """
@@ -514,7 +522,7 @@ def main(args=None):
         )
         
         # 云环境性能监控
-        from EMSC_cloud_io_optimizer import monitor_cloud_performance
+        from cloud.EMSC_cloud_io_optimizer import monitor_cloud_performance
         monitor_cloud_performance()
         
     else:
@@ -797,6 +805,40 @@ def main(args=None):
             progress_callback, dataset_dir,
             best_model_name, model_name
         )
+        
+        # 云环境下上传训练结果到OSS
+        if is_cloud_environment and OSS_UPLOADER_AVAILABLE:
+            print("\n🌥️  检测到云环境，准备上传训练结果到OSS...")
+            try:
+                uploader = EMSCOSSUploader()
+                upload_result = uploader.upload_training_results(
+                    training_dir=dataset_dir,
+                    cleanup_local=True  # 上传后清理本地压缩包
+                )
+                
+                if upload_result and upload_result['success']:
+                    print(f"✅ 训练结果已上传到OSS:")
+                    print(f"   OSS路径: {upload_result['oss_path']}")
+                    print(f"   访问URL: {upload_result['oss_url']}")
+                    
+                    # 保存上传信息到本地文件
+                    upload_info_path = os.path.join(dataset_dir, 'oss_upload_info.json')
+                    with open(upload_info_path, 'w', encoding='utf-8') as f:
+                        import json
+                        json.dump(upload_result, f, indent=2, ensure_ascii=False)
+                    print(f"   上传信息已保存: {upload_info_path}")
+                    
+                else:
+                    print("⚠️  训练结果上传失败，但训练已完成")
+                    
+            except Exception as e:
+                print(f"⚠️  OSS上传过程中出错: {e}")
+                print("训练已完成，但结果未上传到OSS")
+        elif is_cloud_environment and not OSS_UPLOADER_AVAILABLE:
+            print("⚠️  云环境检测到，但OSS上传模块不可用")
+            print("请检查是否安装了oss2依赖: pip install oss2")
+        else:
+            print("💻 本地环境，跳过OSS上传")
 
 if __name__ == '__main__':
     main()

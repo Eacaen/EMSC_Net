@@ -12,10 +12,13 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import tensorflow as tf
 import joblib
+import sys
 from datetime import datetime
 from tensorflow.keras.callbacks import Callback, EarlyStopping
-from EMSC_model import MSC_Sequence
-from EMSC_losses import EMSCLoss
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from core.EMSC_model import MSC_Sequence
+from core.EMSC_losses import EMSCLoss
 
 class MSCProgressCallback(Callback):
     """

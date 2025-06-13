@@ -6,6 +6,9 @@ EMSC模型定义模块
 import tensorflow as tf
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Input, Dense
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 class MSC_Cell(tf.keras.layers.Layer):
     """
@@ -172,7 +175,8 @@ class MSC_Sequence(tf.keras.layers.Layer):
         # 检测环境以优化while_loop参数
         try:
             # 尝试检测环境类型
-            from EMSC_train import detect_environment
+            from training.EMSC_train import detect_environment
+            
             env_type = detect_environment()
             if env_type == 'local':
                 # 本地环境 - 降低并行迭代数减少内存压力

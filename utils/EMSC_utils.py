@@ -6,9 +6,12 @@ EMSC工具模块
 import os
 import numpy as np
 import tensorflow as tf
+import sys
 from tensorflow.keras.models import load_model
-from EMSC_model import MSC_Sequence, build_msc_model
-from EMSC_losses import EMSCLoss
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from core.EMSC_model import MSC_Sequence, build_msc_model
+from core.EMSC_losses import EMSCLoss
 
 def load_or_create_model_with_history(model_path='./msc_models/', model_name='msc_model', 
                                      best_model_name='best_msc_model',

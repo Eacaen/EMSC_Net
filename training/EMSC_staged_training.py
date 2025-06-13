@@ -16,16 +16,18 @@ from tensorflow.keras.utils import Sequence
 import matplotlib.pyplot as plt
 from datetime import datetime
 import json
+import sys
 from typing import List, Tuple, Optional, Dict
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # 导入现有模块
-from EMSC_model import build_msc_model, load_or_create_model_with_history
-from EMSC_data import load_dataset_from_npz
-from EMSC_callbacks import MSCProgressCallback, create_early_stopping_callback
-from EMSC_config import get_dataset_paths
-from EMSC_losses import EMSCLoss
-from EMSC_utils import print_training_summary
-from EMSC_window_sampler import EMSCWindowSampler
+from core.EMSC_model import build_msc_model, load_or_create_model_with_history
+from core.EMSC_data import load_dataset_from_npz
+from training.EMSC_callbacks import MSCProgressCallback, create_early_stopping_callback
+from utils.EMSC_config import get_dataset_paths
+from core.EMSC_losses import EMSCLoss
+from utils.EMSC_utils import print_training_summary
+from utils.EMSC_window_sampler import EMSCWindowSampler
 
 
 class EMSCStagedTrainer:

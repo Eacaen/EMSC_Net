@@ -5,8 +5,10 @@ EMSC模型训练入口脚本
 
 import os
 import sys
-from EMSC_config import parse_training_args, get_dataset_paths
-from EMSC_train import check_environment
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from utils.EMSC_config import parse_training_args, get_dataset_paths
+from training.EMSC_train import check_environment
 
 def main():
     """主函数"""
@@ -23,7 +25,7 @@ def main():
         sys.exit(1)
     
     # 导入并运行主训练脚本，传递args参数
-    from EMSC_train import main as train_main
+    from training.EMSC_train import main as train_main
     train_main(args)
 
 if __name__ == '__main__':

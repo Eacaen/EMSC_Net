@@ -4,8 +4,11 @@ import matplotlib.pyplot as plt
 import tensorflow as tf
 import joblib
 import os
-from EMSC_model import MSC_Sequence
-from EMSC_losses import EMSCLoss, MaskedMSELoss  # 从新模块导入损失函数
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from core.EMSC_model import MSC_Sequence
+from core.EMSC_losses import EMSCLoss, MaskedMSELoss  # 从新模块导入损失函数
 
 # 定义列名映射
 column_mapping = {

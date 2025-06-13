@@ -8,8 +8,11 @@ import os
 import time
 import numpy as np
 import tensorflow as tf
-from EMSC_train import detect_environment, setup_gpu_environment, warmup_gpu_model
-from EMSC_model import build_msc_model
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from training.EMSC_train import detect_environment, setup_gpu_environment, warmup_gpu_model
+from core.EMSC_model import build_msc_model
 
 def test_gpu_warmup():
     """测试GPU预热功能"""

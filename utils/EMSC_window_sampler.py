@@ -7,7 +7,10 @@ import numpy as np
 from typing import List, Tuple, Optional
 import os
 import joblib
-from EMSC_data import load_dataset_from_npz
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from core.EMSC_data import load_dataset_from_npz
 
 class EMSCWindowSampler:
     """EMSC窗口采样器，用于从完整序列中采样窗口数据"""

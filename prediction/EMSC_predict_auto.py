@@ -11,8 +11,11 @@ import tensorflow as tf
 import joblib
 import os
 import json
-from EMSC_model import MSC_Sequence
-from EMSC_losses import EMSCLoss, MaskedMSELoss
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from core.EMSC_model import MSC_Sequence
+from core.EMSC_losses import EMSCLoss, MaskedMSELoss
 
 def auto_load_model_and_config(model_path):
     """
@@ -205,7 +208,7 @@ def smart_predict(model_info, strain_sequence, temperature, time_sequence=None):
         raise ValueError("缺少标准化器，无法进行预测")
     
     # 使用已有的预测函数
-    from EMSC_predict import predict_stress
+    from prediction.EMSC_predict import predict_stress
     
     return predict_stress(
         model=model_info['model'],
@@ -263,7 +266,7 @@ def find_best_model():
     
     # 优先选择标准配置 6-32-32-8-1
     for model in best_models:
-        if model['structure'] == '6-32-32-8-1':
+        if model['structure'] == '6-8-8-8-1':
             print(f"🎯 选择标准配置: {model['structure']}")
             return model['path']
     
@@ -311,7 +314,7 @@ def main():
     selected_file = np.random.choice(file_list)
     print(f"📁 测试文件: {os.path.basename(selected_file)}")
     
-    from EMSC_predict import load_experimental_data, calculate_error_metrics, plot_results
+    from prediction.EMSC_predict import load_experimental_data, calculate_error_metrics, plot_results
     
     exp_strain, exp_stress, exp_time, temperature = load_experimental_data(selected_file)
     

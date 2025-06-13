@@ -1,9 +1,13 @@
 import time
 import numpy as np
 import tensorflow as tf
-from EMSC_data import create_tf_dataset
-from EMSC_loss import EMSCLoss
+import sys
+import os
 from timeout import timeout
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from core.EMSC_data import create_tf_dataset
+from core.EMSC_losses import EMSCLoss
 
 def test_training_step(model, X_paths, Y_paths):
     """测试训练步骤"""

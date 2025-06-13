@@ -8,10 +8,13 @@ import os
 import time
 import numpy as np
 import tensorflow as tf
-from EMSC_train import detect_environment, setup_gpu_environment
-from EMSC_model import build_msc_model
-from EMSC_data import load_dataset_from_npz, create_tf_dataset
-from EMSC_losses import EMSCLoss
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from training.EMSC_train import detect_environment, setup_gpu_environment
+from core.EMSC_model import build_msc_model
+from core.EMSC_data import load_dataset_from_npz, create_tf_dataset
+from core.EMSC_losses import EMSCLoss
 
 def diagnose_sequence_length_issue():
     """诊断序列长度对性能的影响"""
