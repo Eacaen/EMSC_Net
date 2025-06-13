@@ -8,6 +8,10 @@ import glob
 import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d
 import matplotlib as mpl
+import tensorflow as tf
+import json
+from tqdm import tqdm
+import time
 
 # 设置中文字体
 def set_chinese_font():
@@ -38,9 +42,10 @@ def set_chinese_font():
 class EMSCDatasetGenerator:
     """
     EMSC数据集生成器类，用于处理和生成训练数据
+    支持NPZ和TFRecord两种格式
     """
     def __init__(self, target_sequence_length=1000, window_size=None, stride=None, max_subsequences=200,
-                 normalize=True, scaler_type='minmax'):
+                 normalize=True, scaler_type='minmax', output_format='npz'):
         """
         初始化数据集生成器
         
@@ -55,6 +60,7 @@ class EMSCDatasetGenerator:
                     'standard' - StandardScaler (Z-score标准化)
                     'robust' - RobustScaler (基于中位数和四分位数的标准化)
                     'maxabs' - MaxAbsScaler (基于最大绝对值的标准化)
+        output_format: 输出格式，可选值：'npz', 'tfrecord', 'both'
         """
         self.target_sequence_length = target_sequence_length
         self.window_size = window_size if window_size is not None else target_sequence_length
@@ -64,6 +70,12 @@ class EMSCDatasetGenerator:
         # 归一化选项
         self.normalize = normalize
         self.scaler_type = scaler_type.lower()
+        
+        # 输出格式选项
+        self.output_format = output_format.lower()
+        valid_formats = ['npz', 'tfrecord', 'both']
+        if self.output_format not in valid_formats:
+            raise ValueError(f"output_format必须是以下之一: {valid_formats}")
         
         # 验证scaler_type
         valid_scalers = ['minmax', 'standard', 'robust', 'maxabs']
@@ -152,7 +164,9 @@ class EMSCDatasetGenerator:
         
         return {
             'dataset_dir': dataset_dir,                    # 数据集目录
-            'dataset_file': os.path.join(dataset_dir, f'{dataset_name}.npz'),  # 数据集文件
+            'dataset_file': os.path.join(dataset_dir, f'{dataset_name}.npz'),  # NPZ数据集文件
+            'tfrecord_file': os.path.join(dataset_dir, f'{dataset_name}.tfrecord'),  # TFRecord数据集文件
+            'tfrecord_info': os.path.join(dataset_dir, f'{dataset_name}.tfrecord.info.json'),  # TFRecord信息文件
             'scaler_dir': os.path.join(dataset_dir, 'scalers'),  # 标准化器目录
             'x_scaler_file': os.path.join(dataset_dir, 'scalers', 'x_scaler.save'),  # X标准化器文件
             'y_scaler_file': os.path.join(dataset_dir, 'scalers', 'y_scaler.save'),  # Y标准化器文件
@@ -449,16 +463,28 @@ class EMSCDatasetGenerator:
             
             print("序列和掩码准备完成")
             
-            # 保存数据集和标准化器
-            print("保存数据集...")
-            save_data = {
-                'X_paths': np.array(x_scaled, dtype=object),
-                'Y_paths': np.array(y_scaled, dtype=object),
-                'normalize': self.normalize,
-                'scaler_type': self.scaler_type if self.normalize else None,
-                'save_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            }
-            np.savez_compressed(paths['dataset_file'], **save_data)
+            # 保存数据集
+            print(f"保存数据集 (格式: {self.output_format})...")
+            
+            # 保存NPZ格式
+            if self.output_format in ['npz', 'both']:
+                print("保存NPZ格式...")
+                save_data = {
+                    'X_paths': np.array(x_scaled, dtype=object),
+                    'Y_paths': np.array(y_scaled, dtype=object),
+                    'normalize': self.normalize,
+                    'scaler_type': self.scaler_type if self.normalize else None,
+                    'output_format': self.output_format,
+                    'save_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                }
+                np.savez_compressed(paths['dataset_file'], **save_data)
+                print(f"NPZ数据集已保存: {paths['dataset_file']}")
+            
+            # 保存TFRecord格式
+            if self.output_format in ['tfrecord', 'both']:
+                print("保存TFRecord格式...")
+                self._save_tfrecord_dataset(x_scaled, y_scaled, paths)
+                print(f"TFRecord数据集已保存: {paths['tfrecord_file']}")
             
             # 保存标准化器（如果启用了归一化）
             if self.normalize and self.x_scaler is not None and self.y_scaler is not None:
@@ -706,9 +732,9 @@ class EMSCDatasetGenerator:
         """
         打印使用示例和说明文档
         """
-        print("\n" + "="*60)
+        print("\n" + "="*70)
         print("         EMSCDatasetGenerator 使用说明")
-        print("="*60)
+        print("="*70)
         
         print("\n1. 归一化选项说明:")
         print("   normalize=True/False  : 是否启用数据归一化")
@@ -718,40 +744,64 @@ class EMSCDatasetGenerator:
         print("   - 'robust'   : RobustScaler - 基于中位数和四分位数的标准化")
         print("   - 'maxabs'   : MaxAbsScaler - 基于最大绝对值的标准化")
         
-        print("\n2. 使用示例:")
-        print("\n   # 示例1: 使用MinMax归一化（推荐用于神经网络）")
+        print("\n2. 输出格式选项说明:")
+        print("   output_format选项:")
+        print("   - 'npz'      : 保存为NPZ格式（默认，兼容性好）")
+        print("   - 'tfrecord' : 保存为TFRecord格式（TensorFlow优化，加载更快）")
+        print("   - 'both'     : 同时保存NPZ和TFRecord格式")
+        
+        print("\n3. 使用示例:")
+        print("\n   # 示例1: 生成NPZ格式数据集（默认）")
         print("   generator = EMSCDatasetGenerator(")
         print("       target_sequence_length=1000,")
         print("       normalize=True,")
-        print("       scaler_type='minmax'")
+        print("       scaler_type='minmax',")
+        print("       output_format='npz'")
         print("   )")
         
-        print("\n   # 示例2: 使用Standard归一化（适合传统机器学习）")
+        print("\n   # 示例2: 生成TFRecord格式数据集（推荐用于大数据集）")
         print("   generator = EMSCDatasetGenerator(")
         print("       target_sequence_length=1000,")
         print("       normalize=True,")
-        print("       scaler_type='standard'")
+        print("       scaler_type='minmax',")
+        print("       output_format='tfrecord'")
         print("   )")
         
-        print("\n   # 示例3: 禁用归一化（使用原始数据）")
+        print("\n   # 示例3: 同时生成两种格式")
         print("   generator = EMSCDatasetGenerator(")
         print("       target_sequence_length=1000,")
-        print("       normalize=False")
+        print("       normalize=True,")
+        print("       scaler_type='minmax',")
+        print("       output_format='both'")
         print("   )")
         
-        print("\n3. 归一化方法选择建议:")
+        print("\n   # 示例4: 禁用归一化，生成TFRecord")
+        print("   generator = EMSCDatasetGenerator(")
+        print("       target_sequence_length=1000,")
+        print("       normalize=False,")
+        print("       output_format='tfrecord'")
+        print("   )")
+        
+        print("\n4. 格式选择建议:")
+        print("   - 小数据集(<100MB): 推荐使用 'npz'")
+        print("   - 大数据集(>100MB): 推荐使用 'tfrecord'")
+        print("   - 需要兼容性: 推荐使用 'both'")
+        print("   - TensorFlow训练: 推荐使用 'tfrecord'")
+        
+        print("\n5. 归一化方法选择建议:")
         print("   - 神经网络模型: 推荐使用 'minmax'")
         print("   - 数据包含异常值: 推荐使用 'robust'")
         print("   - 传统机器学习: 推荐使用 'standard'")
         print("   - 数据已预处理: 可选择 normalize=False")
         
-        print("\n4. 注意事项:")
-        print("   - 数据集会保存归一化设置，加载时会检查一致性")
+        print("\n6. 注意事项:")
+        print("   - 数据集会保存归一化和格式设置")
         print("   - 标准化器会自动保存和加载")
+        print("   - TFRecord格式加载速度更快，但文件较大")
         print("   - 可使用 force_normalize=True 强制重新归一化")
-        print("   - 使用 get_scaler_info() 查看当前归一化设置")
+        print("   - 使用 get_scaler_info() 查看当前设置")
         
-        print("="*60)
+        print("="*70)
 
     def recover_physical_quantities(self, X_paths):
         """
@@ -907,6 +957,120 @@ class EMSCDatasetGenerator:
             print("警告: 未找到标准化器文件")
             return None, None
 
+    def _bytes_feature(self, value):
+        """将numpy数组转换为bytes特征"""
+        if isinstance(value, type(tf.constant(0))):
+            value = value.numpy()
+        return tf.train.Feature(bytes_list=tf.train.BytesList(value=[value.tobytes()]))
+
+    def _float_feature(self, value):
+        """将float值转换为float特征"""
+        return tf.train.Feature(float_list=tf.train.FloatList(value=[value]))
+
+    def _int64_feature(self, value):
+        """将int值转换为int64特征"""
+        return tf.train.Feature(int64_list=tf.train.Int64List(value=[value]))
+
+    def _save_tfrecord_dataset(self, x_scaled, y_scaled, paths):
+        """
+        保存TFRecord格式的数据集
+        
+        参数:
+        x_scaled: 标准化后的X数据列表
+        y_scaled: 标准化后的Y数据列表
+        paths: 路径字典
+        """
+        start_time = time.time()
+        total_samples = len(x_scaled)
+        
+        print(f"开始转换 {total_samples} 个样本到TFRecord格式...")
+        
+        # 创建TFRecord写入器
+        with tf.io.TFRecordWriter(paths['tfrecord_file']) as writer:
+            for i, (x_sample, y_sample) in enumerate(tqdm(zip(x_scaled, y_scaled), 
+                                                          total=total_samples, 
+                                                          desc="转换TFRecord")):
+                # 确保数据是numpy数组并转换为float32
+                x_array = np.array(x_sample, dtype=np.float32)
+                y_array = np.array(y_sample, dtype=np.float32)
+                
+                # 创建特征
+                feature = {
+                    'X_paths': self._bytes_feature(x_array),
+                    'Y_paths': self._bytes_feature(y_array),
+                    'sample_id': self._int64_feature(i)
+                }
+                
+                # 创建Example并写入
+                example = tf.train.Example(features=tf.train.Features(feature=feature))
+                writer.write(example.SerializeToString())
+        
+        # 创建TFRecord信息文件 - 与现有格式兼容
+        if x_scaled and y_scaled:
+            sample_x = np.array(x_scaled[0], dtype=np.float32)
+            sample_y = np.array(y_scaled[0], dtype=np.float32)
+            
+            # 计算展平后的大小
+            x_flattened_size = sample_x.size
+            y_flattened_size = sample_y.size
+            
+            dataset_info = {
+                'keys': ['X_paths', 'Y_paths'],
+                'total_samples': total_samples,
+                'shapes': {
+                    'X_paths': [x_flattened_size],  # 展平后的大小
+                    'Y_paths': [y_flattened_size]   # 展平后的大小
+                },
+                'dtypes': {
+                    'X_paths': 'float32',
+                    'Y_paths': 'float32'
+                },
+                'created_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                'source_file': paths['dataset_file'],
+                'note': 'TFRecord格式数据集 - 由EMSCDatasetGenerator生成',
+                'normalize': self.normalize,
+                'scaler_type': self.scaler_type if self.normalize else None,
+                'output_format': self.output_format,
+                'conversion_time': time.time() - start_time,
+                'conversion_method': 'dataset_generator_tfrecord',
+                'original_shapes': {
+                    'X_paths': {
+                        'outer_shape': [total_samples] + list(sample_x.shape),
+                        'inner_shape': list(sample_x.shape),
+                        'note': f'嵌套数组: 外层({total_samples}, {sample_x.shape[0]}, {sample_x.shape[1]}), 内层{sample_x.shape}'
+                    },
+                    'Y_paths': {
+                        'outer_shape': [total_samples] + list(sample_y.shape),
+                        'inner_shape': list(sample_y.shape),
+                        'note': f'嵌套数组: 外层({total_samples}, {sample_y.shape[0]}, {sample_y.shape[1]}), 内层{sample_y.shape}'
+                    }
+                }
+            }
+        else:
+            # 备用信息
+            dataset_info = {
+                'keys': ['X_paths', 'Y_paths'],
+                'total_samples': total_samples,
+                'shapes': {'X_paths': 'unknown', 'Y_paths': 'unknown'},
+                'dtypes': {'X_paths': 'float32', 'Y_paths': 'float32'},
+                'created_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                'note': 'TFRecord格式数据集 - 由EMSCDatasetGenerator生成',
+                'conversion_time': time.time() - start_time,
+                'conversion_method': 'dataset_generator_tfrecord'
+            }
+        
+        # 保存信息文件
+        with open(paths['tfrecord_info'], 'w') as f:
+            json.dump(dataset_info, f, indent=2)
+        
+        elapsed_time = time.time() - start_time
+        conversion_rate = total_samples / elapsed_time if elapsed_time > 0 else 0
+        
+        print(f"TFRecord转换完成:")
+        print(f"  ⏱️ 耗时: {elapsed_time:.2f}秒")
+        print(f"  📈 转换速度: {conversion_rate:.1f} 样本/秒")
+        print(f"  📋 信息文件: {paths['tfrecord_info']}")
+
 def main():
     """主函数，用于测试数据集生成器"""
     # 打印使用说明
@@ -924,39 +1088,56 @@ def main():
         print(f"在 {data_dir} 中未找到数据文件")
         return
     
-    # 创建数据集生成器
-    target_sequence_length = 5000
+    # 创建数据集生成器 - 修改为匹配训练脚本期望的格式
+    # 获取第一个Excel文件的长度作为目标序列长度
+    first_file = file_list[0]
+    df = pd.read_excel(first_file)
+    target_sequence_length = len(df)
     window_size = target_sequence_length
-    stride = 500
-    max_subsequences = 200
+    stride = 100  # 减小步长以生成更多重叠序列
+    max_subsequences = 50  # 减少每个文件的子序列数量
     
-    # 示例1: 使用MinMax归一化（默认）
+    # 示例1: 生成TFRecord格式数据集（推荐用于大数据集）
     generator = EMSCDatasetGenerator(
         target_sequence_length=target_sequence_length,
         window_size=window_size,
         stride=stride,
         max_subsequences=max_subsequences,
         normalize=True,          # 启用归一化
-        scaler_type='minmax'     # 使用MinMax归一化
+        scaler_type='minmax',     # 使用MinMax归一化
+        output_format='both'      # 同时生成NPZ和TFRecord以确保兼容性
     )
     
-    # 示例2: 使用Standard归一化
+    # 示例2: 生成NPZ格式数据集（兼容性好）
     # generator = EMSCDatasetGenerator(
     #     target_sequence_length=target_sequence_length,
     #     window_size=window_size,
     #     stride=stride,
     #     max_subsequences=max_subsequences,
     #     normalize=True,
-    #     scaler_type='standard'   # 使用Standard归一化 (Z-score)
+    #     scaler_type='minmax',
+    #     output_format='npz'      # 输出格式为NPZ
     # )
     
-    # 示例3: 禁用归一化
+    # 示例3: 同时生成两种格式
     # generator = EMSCDatasetGenerator(
     #     target_sequence_length=target_sequence_length,
     #     window_size=window_size,
     #     stride=stride,
     #     max_subsequences=max_subsequences,
-    #     normalize=False          # 禁用归一化
+    #     normalize=True,
+    #     scaler_type='minmax',
+    #     output_format='both'     # 同时生成NPZ和TFRecord
+    # )
+    
+    # 示例4: 禁用归一化，生成TFRecord
+    # generator = EMSCDatasetGenerator(
+    #     target_sequence_length=target_sequence_length,
+    #     window_size=window_size,
+    #     stride=stride,
+    #     max_subsequences=max_subsequences,
+    #     normalize=False,         # 禁用归一化
+    #     output_format='tfrecord' # 输出格式为TFRecord
     # )
     
     # 生成数据集

@@ -12,10 +12,12 @@ import joblib
 import os
 import json
 import sys
+import argparse
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.EMSC_model import MSC_Sequence
 from core.EMSC_losses import EMSCLoss, MaskedMSELoss
+from matplotlib.gridspec import GridSpec
 
 def auto_load_model_and_config(model_path):
     """
@@ -275,8 +277,124 @@ def find_best_model():
     print(f"🎯 选择模型: {selected['structure']}")
     return selected['path']
 
+def plot_combined_results(all_results):
+    """
+    将所有预测结果绘制在同一个图上
+    
+    Args:
+        all_results: 包含所有预测结果的列表，每个元素是一个字典，包含：
+            - strain_sequence: 应变序列
+            - predicted_stress: 预测应力
+            - exp_strain: 实验应变
+            - exp_stress: 实验应力
+            - temperature: 温度
+            - filename: 文件名
+            - error_metrics: 误差指标
+    """
+    plt.style.use('seaborn')
+    fig = plt.figure(figsize=(8, 6))
+    gs = GridSpec(2, 1, height_ratios=[3, 1])
+    
+    # 主图：应力-应变曲线
+    ax1 = fig.add_subplot(gs[0])
+    ax1.set_title('EMSC预测结果对比', fontsize=14, pad=15)
+    ax1.set_xlabel('应变', fontsize=12)
+    ax1.set_ylabel('应力 (MPa)', fontsize=12)
+    
+    # 使用不同的颜色和标记样式
+    colors = plt.cm.tab10(np.linspace(0, 1, len(all_results)))
+    markers = ['o', 's', '^', 'D', 'v', '<', '>', 'p', '*', 'h']
+    
+    # 绘制每个文件的结果
+    for i, result in enumerate(all_results):
+        color = colors[i]
+        marker = markers[i % len(markers)]
+        label = f"{os.path.basename(result['filename'])} (T={result['temperature']}°C)"
+        
+        # 绘制实验数据
+        ax1.plot(result['exp_strain'], result['exp_stress'], 
+                color=color, marker=marker, markersize=4, linestyle='',
+                label=f"{label} (实验)")
+        
+        # 绘制预测数据
+        ax1.plot(result['strain_sequence'], result['predicted_stress'],
+                color=color, linestyle='-', linewidth=1.5,
+                label=f"{label} (预测)")
+    
+    ax1.grid(True, linestyle='--', alpha=0.7)
+    ax1.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
+    
+    # 误差指标表格
+    ax2 = fig.add_subplot(gs[1])
+    ax2.axis('off')
+    
+    # 准备表格数据
+    table_data = []
+    headers = ['文件名', '温度(°C)', 'R²', 'RMSE(MPa)', 'MAE(MPa)']
+    
+    for result in all_results:
+        metrics = result['error_metrics']
+        table_data.append([
+            os.path.basename(result['filename']),
+            f"{result['temperature']:.1f}",
+            f"{metrics['R2']:.4f}",
+            f"{metrics['RMSE']:.2f}",
+            f"{metrics['MAE']:.2f}"
+        ])
+    
+    # 计算平均值
+    avg_metrics = {
+        'R2': np.mean([r['error_metrics']['R2'] for r in all_results]),
+        'RMSE': np.mean([r['error_metrics']['RMSE'] for r in all_results]),
+        'MAE': np.mean([r['error_metrics']['MAE'] for r in all_results])
+    }
+    
+    # 添加平均值行
+    table_data.append([
+        '平均值',
+        '-',
+        f"{avg_metrics['R2']:.4f}",
+        f"{avg_metrics['RMSE']:.2f}",
+        f"{avg_metrics['MAE']:.2f}"
+    ])
+    
+    # 创建表格
+    table = ax2.table(
+        cellText=table_data,
+        colLabels=headers,
+        loc='center',
+        cellLoc='center',
+        colWidths=[0.3, 0.15, 0.15, 0.15, 0.15]
+    )
+    
+    # 设置表格样式
+    table.auto_set_font_size(False)
+    table.set_fontsize(10)
+    table.scale(1.2, 1.5)
+    
+    # 设置表格标题
+    ax2.set_title('预测结果统计', pad=20, fontsize=12)
+    
+    # 调整布局
+    plt.tight_layout()
+    
+    # 保存图片
+    save_path = 'combined_predictions.png'
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    print(f"\n💾 组合预测图已保存至: {save_path}")
+    
+    plt.show()
+
 def main():
     """主函数 - 简化的使用接口"""
+    
+    # 解析命令行参数
+    parser = argparse.ArgumentParser(description='EMSC自动预测脚本')
+    parser.add_argument('-n', '--num_files', type=int, default=1,
+                      help='要随机选择的文件数量 (默认: 1)')
+    parser.add_argument('-g', '--gap', type=int, default=1,
+                      help='实验数据间隔 (默认: 1)')   
+    args = parser.parse_args()
     
     # 1. 自动找到最佳模型
     try:
@@ -310,53 +428,93 @@ def main():
         print("❌ 未找到实验数据文件")
         return
     
-    # 随机选择一个文件进行测试
-    selected_file = np.random.choice(file_list)
-    print(f"📁 测试文件: {os.path.basename(selected_file)}")
+    # 确保n不超过可用文件数量
+    n_files = min(args.num_files, len(file_list))
+    if n_files < args.num_files:
+        print(f"⚠️ 警告: 请求的文件数量({args.num_files})超过可用文件数量({len(file_list)})")
+        print(f"   将使用所有可用文件({n_files}个)")
+    
+    # 随机选择n个文件
+    selected_files = np.random.choice(file_list, size=n_files, replace=False)
+
+    # selected_files = ['/Users/tianyunhu/Documents/temp/CTC/PPCC/PPCC_Ten_263.636_40.102.xlsx']
+    # gap = 100
+
+    print(f"📁 已选择 {n_files} 个测试文件:")
+    for i, file in enumerate(selected_files, 1):
+        print(f"  {i}. {os.path.basename(file)}")
     
     from prediction.EMSC_predict import load_experimental_data, calculate_error_metrics, plot_results
     
-    exp_strain, exp_stress, exp_time, temperature = load_experimental_data(selected_file)
+    # 存储所有结果
+    all_results = []
     
-    if exp_strain is None:
-        print("❌ 实验数据加载失败")
-        return
-    
-    # 4. 进行预测（现在不需要手动指定参数了！）
-    try:
-        predicted_stress, time_sequence = smart_predict(
-            model_info=model_info,
-            strain_sequence=exp_strain,
-            temperature=temperature,
-            time_sequence=exp_time
+    for selected_file in selected_files:
+        print(f"\n{'='*50}")
+        print(f"📊 处理文件: {os.path.basename(selected_file)}")
+        
+        exp_strain, exp_stress, exp_time, temperature = load_experimental_data(selected_file, gap = args.gap)
+        
+        if exp_strain is None:
+            print(f"❌ 文件 {os.path.basename(selected_file)} 数据加载失败，跳过")
+            continue
+        
+        # 进行预测
+        try:
+            predicted_stress, time_sequence = smart_predict(
+                model_info=model_info,
+                strain_sequence=exp_strain,
+                temperature=temperature,
+                time_sequence=exp_time
+            )
+            
+            print("✅ 预测完成!")
+            
+        except Exception as e:
+            print(f"❌ 预测失败: {e}")
+            continue
+        
+        # 计算误差
+        error_metrics = calculate_error_metrics(
+            predicted_stress, exp_strain, exp_stress, exp_strain
         )
         
-        print("✅ 预测完成!")
+        # 存储结果
+        all_results.append({
+            'strain_sequence': exp_strain,
+            'predicted_stress': predicted_stress,
+            'exp_strain': exp_strain,
+            'exp_stress': exp_stress,
+            'temperature': temperature,
+            'filename': selected_file,
+            'error_metrics': error_metrics
+        })
         
-    except Exception as e:
-        print(f"❌ 预测失败: {e}")
-        return
+        print(f"\n🎯 文件 {os.path.basename(selected_file)} 预测结果:")
+        print(f"   R²: {error_metrics['R2']:.4f}")
+        print(f"   RMSE: {error_metrics['RMSE']:.2f} MPa")
+        print(f"   MAE: {error_metrics['MAE']:.2f} MPa")
     
-    # 5. 计算误差和绘图
-    error_metrics = calculate_error_metrics(
-        predicted_stress, exp_strain, exp_stress, exp_strain
-    )
-    
-    plot_results(
-        strain_sequence=exp_strain,
-        predicted_stress=predicted_stress,
-        time_sequence=time_sequence,
-        temperature=temperature,
-        exp_strain=exp_strain,
-        exp_stress=exp_stress,
-        exp_time=exp_time,
-        error_metrics=error_metrics
-    )
-    
-    print(f"\n🎯 预测结果总结:")
-    print(f"   R²: {error_metrics['R2']:.4f}")
-    print(f"   RMSE: {error_metrics['RMSE']:.2f} MPa")
-    print(f"   MAE: {error_metrics['MAE']:.2f} MPa")
+    # 如果有结果，绘制组合图
+    if all_results:
+        print("\n📊 正在生成组合预测图...")
+        plot_combined_results(all_results)
+        
+        # 计算并显示平均结果
+        avg_metrics = {
+            'R2': np.mean([r['error_metrics']['R2'] for r in all_results]),
+            'RMSE': np.mean([r['error_metrics']['RMSE'] for r in all_results]),
+            'MAE': np.mean([r['error_metrics']['MAE'] for r in all_results])
+        }
+        
+        print(f"\n{'='*50}")
+        print(f"📊 {len(all_results)}个文件的平均预测结果:")
+        print(f"   R²: {avg_metrics['R2']:.4f}")
+        print(f"   RMSE: {avg_metrics['RMSE']:.2f} MPa")
+        print(f"   MAE: {avg_metrics['MAE']:.2f} MPa")
+        print(f"{'='*50}")
+    else:
+        print("\n❌ 没有成功处理任何文件")
 
 if __name__ == '__main__':
     main() 

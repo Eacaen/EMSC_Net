@@ -354,9 +354,19 @@ def main(args=None):
         else:
             print("⚠️  云优化模块不可用，跳过优化")
     
-    # 获取数据集路径
-    paths = get_dataset_paths(args.dataset)
-    base_dataset_dir = paths['dataset_dir']
+    # 处理数据集路径
+    if os.path.isabs(args.dataset):
+        # 如果是绝对路径，直接使用
+        dataset_path = args.dataset
+        # 从路径中提取目录和文件名来构建模型保存路径
+        dataset_file_dir = os.path.dirname(dataset_path)
+        dataset_basename = os.path.splitext(os.path.basename(dataset_path))[0]
+        base_dataset_dir = dataset_file_dir
+    else:
+        # 如果是数据集名称，使用原来的逻辑
+        paths = get_dataset_paths(args.dataset)
+        base_dataset_dir = paths['dataset_dir']
+        dataset_path = paths['dataset_path']
     
     # 根据网络结构创建子文件夹
     network_structure = f"6-{args.hidden_dim}-{args.hidden_dim}-{args.state_dim}-1"
@@ -367,9 +377,8 @@ def main(args=None):
     print(f"网络结构: {network_structure}")
     print(f"模型保存目录: {dataset_dir}")
     
-    model_name = paths['model_name']
-    best_model_name = paths['best_model_name']
-    dataset_path = paths['dataset_path']
+    model_name = 'msc_model'
+    best_model_name = 'best_msc_model'
     
     # 创建和保存训练配置
     training_config = create_training_config(
@@ -456,10 +465,13 @@ def main(args=None):
             print(f"❌ 指定的数据集不存在: {dataset_path}")
             raise ValueError(f"数据集不存在: {dataset_path}")
     
-    # 加载数据集
-    print(f"📂 加载数据集: {dataset_path}")
-    X_paths, Y_paths = load_dataset_from_npz(dataset_path)
-    if X_paths is None or Y_paths is None:
+    # 智能加载数据集
+    print(f"📂 智能加载数据集: {dataset_path}")
+    from EMSC_Net.core.EMSC_data import load_dataset_smart
+    
+    dataset_result = load_dataset_smart(dataset_path, use_tfrecord=True)
+    
+    if dataset_result is None or dataset_result[0] is None:
         print(f"❌ 数据集加载失败!")
         print(f"💡 解决方案:")
         print(f"   1. 检查数据集文件是否完整: {dataset_path}")
@@ -472,99 +484,169 @@ def main(args=None):
             print(f"   3. 确认数据集文件格式正确")
         raise ValueError("数据集加载失败")
     
-    # 准备训练数据
-    print("准备训练序列...")
-    init_states = np.zeros((len(X_paths), training_config['STATE_DIM']), dtype=np.float32)
+    dataset_type, dataset_data = dataset_result
     
-    # 随机打乱序列
-    print("随机打乱训练序列...")
-    np.random.seed(training_config['random_seed'])
-    indices = np.random.permutation(len(X_paths))
-    X_paths = [X_paths[i] for i in indices]
-    Y_paths = [Y_paths[i] for i in indices]
-    init_states = init_states[indices]
+    if dataset_type == 'tfrecord':
+        # 使用TFRecord数据集
+        print(f"📊 使用TFRecord格式数据集")
+        tfrecord_path = dataset_data
+        use_tfrecord = True
+        X_paths, Y_paths = None, None  # TFRecord模式下不需要这些
+    else:
+        # 使用NPZ数据集
+        print(f"📊 使用NPZ格式数据集")
+        X_paths, Y_paths = dataset_data
+        use_tfrecord = False
     
-    # 划分训练集和验证集
-    train_size = int(training_config['train_test_split_ratio'] * len(X_paths))
-    X_train = X_paths[:train_size]
-    Y_train = Y_paths[:train_size]
-    init_states_train = init_states[:train_size]
-    
-    X_val = X_paths[train_size:]
-    Y_val = Y_paths[train_size:]
-    init_states_val = init_states[train_size:]
-    
-    print(f"训练集大小: {len(X_train)}")
-    print(f"验证集大小: {len(X_val)}")
+    # 根据数据集类型进行不同的处理
+    if use_tfrecord:
+        # TFRecord模式
+        print("📊 TFRecord模式数据处理...")
+        from EMSC_Net.utils.EMSC_dataset_converter import load_tfrecord_dataset
+        
+        # 确定批处理大小
+        if args.batch_size is not None:
+            batch_size = args.batch_size
+            print(f"使用用户指定的batch_size: {batch_size}")
+        else:
+            batch_size = 32  # TFRecord默认batch_size
+            print(f"未指定batch_size，使用默认值: {batch_size}")
+        
+        # 加载TFRecord数据集
+        full_dataset = load_tfrecord_dataset(tfrecord_path, batch_size=batch_size, state_dim=args.state_dim)
+        
+        # 获取数据集信息
+        import json
+        info_path = tfrecord_path + '.info.json'
+        with open(info_path, 'r') as f:
+            dataset_info = json.load(f)
+        
+        total_samples = dataset_info['total_samples']
+        train_size = int(training_config['train_test_split_ratio'] * total_samples)
+        val_size = total_samples - train_size
+        
+        print(f"总样本数: {total_samples}")
+        print(f"训练集大小: {train_size}")
+        print(f"验证集大小: {val_size}")
+        
+        # 分割训练集和验证集
+        train_dataset = full_dataset.take(train_size // batch_size)
+        val_dataset = full_dataset.skip(train_size // batch_size)
+        
+        # 获取最大序列长度（从原始形状推断）
+        if 'original_shapes' in dataset_info and 'X_paths' in dataset_info['original_shapes']:
+            inner_shape = dataset_info['original_shapes']['X_paths']['inner_shape']
+            max_seq_length = inner_shape[0]  # (5000, 6) -> 5000
+        else:
+            max_seq_length = 5000  # 默认值
+        
+        # TFRecord模式下创建兼容变量
+        X_train = [None] * train_size  # 占位符，仅用于长度计算
+        Y_train = [None] * train_size
+        X_val = [None] * val_size
+        Y_val = [None] * val_size
+        init_states_train = np.zeros((train_size, training_config['STATE_DIM']), dtype=np.float32)
+        init_states_val = np.zeros((val_size, training_config['STATE_DIM']), dtype=np.float32)
+        
+    else:
+        # NPZ模式（原始逻辑）
+        print("📊 NPZ模式数据处理...")
+        
+        # 准备训练数据
+        print("准备训练序列...")
+        init_states = np.zeros((len(X_paths), training_config['STATE_DIM']), dtype=np.float32)
+        
+        # 随机打乱序列
+        print("随机打乱训练序列...")
+        np.random.seed(training_config['random_seed'])
+        indices = np.random.permutation(len(X_paths))
+        X_paths = [X_paths[i] for i in indices]
+        Y_paths = [Y_paths[i] for i in indices]
+        init_states = init_states[indices]
+        
+        # 划分训练集和验证集
+        train_size = int(training_config['train_test_split_ratio'] * len(X_paths))
+        X_train = X_paths[:train_size]
+        Y_train = Y_paths[:train_size]
+        init_states_train = init_states[:train_size]
+        
+        X_val = X_paths[train_size:]
+        Y_val = Y_paths[train_size:]
+        init_states_val = init_states[train_size:]
+        
+        print(f"训练集大小: {len(X_train)}")
+        print(f"验证集大小: {len(X_val)}")
+        
+        # 计算最大序列长度
+        max_seq_length = max(len(x) for x in X_paths)
     
     # 确定批处理大小：优先使用用户指定的batch_size，否则自动计算
-    if args.batch_size is not None:
+    if args.batch_size is not None and not use_tfrecord:
         batch_size = args.batch_size
         optimal_batch_size = get_optimal_batch_size(len(X_train), num_workers)
         print(f"使用用户指定的batch_size: {batch_size}")
         if batch_size != optimal_batch_size:
             print(f"注意：建议的batch_size为: {optimal_batch_size}")
-    else:
+    elif not use_tfrecord:
         batch_size = get_optimal_batch_size(len(X_train), num_workers)
         print(f"未指定batch_size，使用自动计算值: {batch_size}")
     
     # 创建TensorFlow数据集 - 针对云环境优化
-    print("创建TensorFlow数据集...")
-    
-    if cloud_optimizer:
-        # 使用云优化的数据集创建
-        print("🌥️  使用云环境优化数据集...")
-        train_dataset = cloud_optimizer.create_optimized_dataset(
-            X_train, Y_train, init_states_train, batch_size
-        )
-        val_dataset = cloud_optimizer.create_optimized_dataset(
-            X_val, Y_val, init_states_val, batch_size
-        )
+    if not use_tfrecord:
+        print("创建TensorFlow数据集...")
         
-        # 云环境性能监控
-        from cloud.EMSC_cloud_io_optimizer import monitor_cloud_performance
-        monitor_cloud_performance()
-        
-    else:
-        # 标准数据集创建 - 区分环境优化数据加载并行度
-        if num_workers is not None:  # CPU模式
-            data_parallel_calls = min(num_workers, 16)  # 限制最大并行度避免过度竞争
-            prefetch_buffer = min(batch_size * 4, 64)  # 预取缓冲区
-            print(f"CPU优化: 数据并行度={data_parallel_calls}, 预取缓冲={prefetch_buffer}")
-        else:  # GPU模式
-            env_type = detect_environment()
-            if env_type == 'local':
-                # 本地GPU环境 - 使用较小的并行度和缓冲区
-                data_parallel_calls = 4  # 本地环境使用固定并行度
-                prefetch_buffer = max(2, batch_size // 8)  # 较小的预取缓冲
-                print(f"本地GPU优化: 数据并行度={data_parallel_calls}, 预取缓冲={prefetch_buffer}")
-            else:
-                # 云GPU环境 - 使用自动调优
-                data_parallel_calls = tf.data.AUTOTUNE
-                prefetch_buffer = tf.data.AUTOTUNE
-                print(f"云GPU优化: 使用AUTOTUNE")
-        
-        train_dataset = create_tf_dataset(
-            X_train, Y_train, init_states_train,
-            batch_size=batch_size,
-            shuffle=True,
-            num_parallel_calls=data_parallel_calls
-        ).prefetch(prefetch_buffer)
-        
-        val_dataset = create_tf_dataset(
-            X_val, Y_val, init_states_val,
-            batch_size=batch_size,
-            shuffle=False,
-            num_parallel_calls=data_parallel_calls
-        ).prefetch(prefetch_buffer)
+        if cloud_optimizer:
+            # 使用云优化的数据集创建
+            print("🌥️  使用云环境优化数据集...")
+            train_dataset = cloud_optimizer.create_optimized_dataset(
+                X_train, Y_train, init_states_train, batch_size
+            )
+            val_dataset = cloud_optimizer.create_optimized_dataset(
+                X_val, Y_val, init_states_val, batch_size
+            )
+            
+            # 云环境性能监控
+            from cloud.EMSC_cloud_io_optimizer import monitor_cloud_performance
+            monitor_cloud_performance()
+            
+        else:
+            # 标准数据集创建 - 区分环境优化数据加载并行度
+            if num_workers is not None:  # CPU模式
+                data_parallel_calls = min(num_workers, 16)  # 限制最大并行度避免过度竞争
+                prefetch_buffer = min(batch_size * 4, 64)  # 预取缓冲区
+                print(f"CPU优化: 数据并行度={data_parallel_calls}, 预取缓冲={prefetch_buffer}")
+            else:  # GPU模式
+                env_type = detect_environment()
+                if env_type == 'local':
+                    # 本地GPU环境 - 使用较小的并行度和缓冲区
+                    data_parallel_calls = 4  # 本地环境使用固定并行度
+                    prefetch_buffer = max(2, batch_size // 8)  # 较小的预取缓冲
+                    print(f"本地GPU优化: 数据并行度={data_parallel_calls}, 预取缓冲={prefetch_buffer}")
+                else:
+                    # 云GPU环境 - 使用自动调优
+                    data_parallel_calls = tf.data.AUTOTUNE
+                    prefetch_buffer = tf.data.AUTOTUNE
+                    print(f"云GPU优化: 使用AUTOTUNE")
+            
+            train_dataset = create_tf_dataset(
+                X_train, Y_train, init_states_train,
+                batch_size=batch_size,
+                shuffle=True,
+                num_parallel_calls=data_parallel_calls
+            ).prefetch(prefetch_buffer)
+            
+            val_dataset = create_tf_dataset(
+                X_val, Y_val, init_states_val,
+                batch_size=batch_size,
+                shuffle=False,
+                num_parallel_calls=data_parallel_calls
+            ).prefetch(prefetch_buffer)
     
     print(f"数据加载配置:")
+    print(f"- 数据集类型: {'TFRecord' if use_tfrecord else 'NPZ'}")
     print(f"- 最终使用的批处理大小: {batch_size}")
     print(f"- 数据加载线程数: {num_workers if num_workers is not None else 'GPU模式'}")
-    
-    # 计算最大序列长度
-    max_seq_length = max(len(x) for x in X_paths)
-    print(f"数据集中最大序列长度: {max_seq_length}")
+    print(f"- 数据集中最大序列长度: {max_seq_length}")
     
     # 加载或创建模型
     epoch_offset = 0
@@ -657,7 +739,7 @@ def main(args=None):
         decay_steps=args.epochs,  # 总epochs数
         decay_rate=0.9,          # 指数衰减率（当使用exponential时）
         min_learning_rate=1e-6,  # 最小学习率
-        patience=min(int(args.epochs/50),50),              # 验证损失不改善的容忍轮数
+        patience=min(int(args.epochs/50),20),              # 验证损失不改善的容忍轮数
         factor=0.5,             # 学习率衰减因子
         verbose=1               # 打印学习率变化
     )
@@ -690,8 +772,12 @@ def main(args=None):
         print(f"早停设置: patience={15}, min_delta={1e-4}")
         print(f"学习率调度: 初始={args.learning_rate}, 最小={1e-6}, 动态调整")
         print(f"模型保存路径: {dataset_dir}")
-        print(f"训练数据大小: {len(X_train)}")
-        print(f"验证数据大小: {len(X_val)}")
+        if use_tfrecord:
+            print(f"训练数据大小: {train_size}")
+            print(f"验证数据大小: {val_size}")
+        else:
+            print(f"训练数据大小: {len(X_train)}")
+            print(f"验证数据大小: {len(X_val)}")
         env_info = f"({'本地' if detect_environment() == 'local' else '云'})" if num_workers is None else ""
         print(f"训练模式: {'GPU ' + env_info if num_workers is None else 'CPU (多线程)'}")
         if num_workers is None:
@@ -708,7 +794,7 @@ def main(args=None):
             print(f"  - 数值稳定性: EMSCLoss保护 + 梯度裁剪")
         
         # 使用性能优化的训练配置 - 针对阿里云CPU优化
-        if num_workers is not None and args.dynamic_batch:  # CPU模式 + 动态批次
+        if num_workers is not None and args.dynamic_batch and not use_tfrecord:  # CPU模式 + 动态批次 + NPZ模式
             print(f"🚀 启用动态批次大小调整 (目标CPU使用率: {args.target_cpu_usage}%)")
             
             # 使用动态批次训练器
@@ -733,6 +819,23 @@ def main(args=None):
                 initial_epoch=epoch_offset,
                 verbose=1,
                 callbacks=dynamic_callbacks,
+                use_multiprocessing=True,
+                workers=min(num_workers, 32),
+                max_queue_size=max(20, num_workers * 2)
+            )
+        
+        elif num_workers is not None and args.dynamic_batch and use_tfrecord:
+            print("⚠️  TFRecord模式暂不支持动态批次调整，使用标准训练")
+            print(f"🚀 CPU训练配置 (TFRecord模式)")
+            
+            # 使用标准训练
+            history = model.fit(
+                train_dataset,
+                validation_data=val_dataset,
+                epochs=args.epochs,
+                initial_epoch=epoch_offset,
+                verbose=1,
+                callbacks=callbacks,
                 use_multiprocessing=True,
                 workers=min(num_workers, 32),
                 max_queue_size=max(20, num_workers * 2)

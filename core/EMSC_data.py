@@ -219,3 +219,56 @@ def load_dataset_from_npz(npz_path='./msc_models/dataset.npz'):
     except Exception as e:
         print(f"加载数据集时出错: {e}")
         return None, None
+
+def load_dataset_smart(dataset_path, use_tfrecord=True):
+    """
+    智能加载数据集：优先使用TFRecord，如果没有则使用NPZ
+    
+    Args:
+        dataset_path: 数据集路径（可以是.npz或.tfrecord）
+        use_tfrecord: 是否优先使用TFRecord格式
+    
+    Returns:
+        tuple: (X_paths, Y_paths) 或 tf.data.Dataset（如果使用TFRecord）
+    """
+    import os
+    from pathlib import Path
+    
+    # 获取基础路径（去除扩展名）
+    base_path = str(Path(dataset_path).with_suffix(''))
+    npz_path = base_path + '.npz'
+    tfrecord_path = base_path + '.tfrecord'
+    
+    print(f"🔍 智能数据集加载:")
+    print(f"   基础路径: {base_path}")
+    print(f"   NPZ路径: {npz_path}")
+    print(f"   TFRecord路径: {tfrecord_path}")
+    
+    if use_tfrecord and os.path.exists(tfrecord_path):
+        # 优先使用TFRecord
+        try:
+            from EMSC_Net.utils.EMSC_dataset_converter import load_tfrecord_dataset, check_dataset_exists
+            
+            if check_dataset_exists(tfrecord_path):
+                print(f"✅ 使用TFRecord数据集: {tfrecord_path}")
+                return 'tfrecord', tfrecord_path
+            else:
+                print(f"⚠️ TFRecord文件存在但不完整，回退到NPZ")
+        except Exception as e:
+            print(f"⚠️ TFRecord加载失败: {e}，回退到NPZ")
+    
+    # 使用NPZ文件
+    if os.path.exists(npz_path):
+        print(f"✅ 使用NPZ数据集: {npz_path}")
+        X_paths, Y_paths = load_dataset_from_npz(npz_path)
+        if X_paths is not None and Y_paths is not None:
+            return 'npz', (X_paths, Y_paths)
+        else:
+            print(f"❌ NPZ数据集加载失败")
+            return None, None
+    
+    print(f"❌ 未找到可用的数据集文件")
+    print(f"   尝试查找的文件:")
+    print(f"   - NPZ: {npz_path} (存在: {os.path.exists(npz_path)})")
+    print(f"   - TFRecord: {tfrecord_path} (存在: {os.path.exists(tfrecord_path)})")
+    return None, None

@@ -133,7 +133,7 @@ def extract_strain_rate_from_filename(filename):
         print(f"警告: 无法从文件名 {filename} 提取应变率信息: {e}")
         return None
 
-def load_experimental_data(file_path):
+def load_experimental_data(file_path, gap = 1):
     """
     加载实验数据
     
@@ -148,7 +148,7 @@ def load_experimental_data(file_path):
     """
     try:
         df = pd.read_excel(file_path)
-        df = df.rename(columns=lambda x: x.strip().lower())
+        df = df.rename(columns=lambda x: x.strip().lower())[::gap]
         
         # 检查必要的列是否存在
         required_columns = {'time', 'true_strain', 'true_stress', 'temperature'}
