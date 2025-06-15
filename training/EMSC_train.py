@@ -41,6 +41,7 @@ from utils.EMSC_utils import (load_or_create_model_with_history,
                        plot_final_training_summary,
                        print_training_summary)
 from core.EMSC_losses import EMSCLoss
+from core.EMSC_data import load_dataset_smart
 
 def check_environment(device_preference='auto'):
     """
@@ -467,7 +468,6 @@ def main(args=None):
     
     # 智能加载数据集
     print(f"📂 智能加载数据集: {dataset_path}")
-    from EMSC_Net.core.EMSC_data import load_dataset_smart
     
     dataset_result = load_dataset_smart(dataset_path, use_tfrecord=True)
     
@@ -744,18 +744,78 @@ def main(args=None):
         verbose=1               # 打印学习率变化
     )
     
-    # 创建CPU监控回调（仅CPU训练模式且用户启用时，且不与动态批次冲突）
-    cpu_monitor = None
-    if num_workers is not None and args.monitor_cpu and not args.dynamic_batch:
-        cpu_monitor = create_cpu_monitor_callback(monitor_interval=30, verbose=True)
-        print("已启用CPU使用率监控")
-    elif num_workers is not None and args.monitor_cpu and args.dynamic_batch:
-        print("注意：动态批次调整已包含CPU监控功能，--monitor_cpu将被忽略")
-    
-    # 准备回调列表
-    callbacks = [progress_callback, early_stopping, lr_scheduler]
-    if cpu_monitor is not None:
-        callbacks.append(cpu_monitor)
+    # 检查是否需要使用自适应训练模式
+    use_adaptive_training = hasattr(args, 'adaptive_training') and args.adaptive_training
+    if use_adaptive_training:
+        print("🚀 启用自适应训练模式 - 专门解决损失停滞问题")
+        from training.EMSC_adaptive_training import adaptive_train_model
+        
+        # 使用自适应训练
+        model, history = adaptive_train_model(
+            model=model,
+            train_dataset=train_dataset,
+            val_dataset=val_dataset,
+            epochs=args.epochs,
+            initial_lr=args.learning_rate,
+            state_dim=args.state_dim,
+            save_path=dataset_dir
+        )
+        
+    else:
+        # 标准训练模式，但添加一些改进
+        print("📊 标准训练模式 - 使用改进的回调策略")
+        
+        # 添加更激进的学习率调度器选项
+        if args.learning_rate <= 1e-6:
+            print("⚠️  检测到很小的学习率，可能导致训练停滞")
+            print("💡 建议使用 --adaptive_training 或增大学习率")
+        
+        # 创建CPU监控回调（仅CPU训练模式且用户启用时，且不与动态批次冲突）
+        cpu_monitor = None
+        if num_workers is not None and args.monitor_cpu and not args.dynamic_batch:
+            cpu_monitor = create_cpu_monitor_callback(monitor_interval=30, verbose=True)
+            print("已启用CPU使用率监控")
+        elif num_workers is not None and args.monitor_cpu and args.dynamic_batch:
+            print("注意：动态批次调整已包含CPU监控功能，--monitor_cpu将被忽略")
+        
+        # 准备回调列表
+        callbacks = [progress_callback, early_stopping, lr_scheduler]
+        if cpu_monitor is not None:
+            callbacks.append(cpu_monitor)
+        
+        # 添加损失停滞检测回调
+        class LossStagnationCallback(tf.keras.callbacks.Callback):
+            def __init__(self, patience=50, min_improvement=1e-6):
+                super().__init__()
+                self.patience = patience
+                self.min_improvement = min_improvement
+                self.best_loss = float('inf')
+                self.wait = 0
+                self.stagnation_detected = False
+                
+            def on_epoch_end(self, epoch, logs=None):
+                current_loss = logs.get('val_loss') or logs.get('loss')
+                improvement = self.best_loss - current_loss
+                
+                if improvement > self.min_improvement:
+                    self.best_loss = current_loss
+                    self.wait = 0
+                    if self.stagnation_detected:
+                        print(f"Epoch {epoch + 1}: 损失恢复改善 ✅")
+                        self.stagnation_detected = False
+                else:
+                    self.wait += 1
+                    
+                if self.wait >= self.patience and not self.stagnation_detected:
+                    self.stagnation_detected = True
+                    print(f"⚠️  Epoch {epoch + 1}: 检测到损失停滞 (当前损失: {current_loss:.6f})")
+                    print("💡 建议解决方案:")
+                    print("   1. 使用 --adaptive_training 启用自适应训练")
+                    print("   2. 调整学习率: --learning_rate 1e-2")
+                    print("   3. 检查数据标准化是否合适")
+                    print("   4. 尝试不同的网络结构: --hidden_dim 64")
+                    
+        callbacks.append(LossStagnationCallback(patience=30, min_improvement=1e-6))
     
     # 训练模型
     remaining_epochs = args.epochs

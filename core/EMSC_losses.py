@@ -64,28 +64,72 @@ class EMSCLoss(tf.keras.losses.Loss):
         # 3. 计算门控参数在序列上的平均值
         mean_alpha = tf.reduce_mean(alpha_seq, axis=1)  # (batch_size, state_dim)
         mean_beta = tf.reduce_mean(beta_seq, axis=1)    # (batch_size, state_dim)
-        mean_gamma = tf.reduce_mean(gamma_seq, axis=1)  # (batch_size, state_dim)
+        mean_gamma = tf.reduce_mean(gamma_seq, axis=1)
         
-        # 4. 计算正则化损失，添加数值保护
+        # 4. 改进的正则化损失计算 - 使用多种正则化策略
+        # a) 门控参数差异正则化（降低权重）
         reg_alpha_beta = tf.reduce_mean(tf.square(mean_alpha - mean_beta))
         reg_alpha_gamma = tf.reduce_mean(tf.square(mean_alpha - mean_gamma))
+        reg_beta_gamma = tf.reduce_mean(tf.square(mean_beta - mean_gamma))
+        gate_diversity_loss = (reg_alpha_beta + reg_alpha_gamma + reg_beta_gamma) / 3.0
+        
+        # b) 门控参数范围正则化（防止过度激活）
+        alpha_range_loss = tf.reduce_mean(tf.maximum(0.0, mean_alpha - 5.0))  # 限制alpha不要太大
+        beta_range_loss = tf.reduce_mean(tf.maximum(0.0, mean_beta - 5.0))
+        gamma_range_loss = tf.reduce_mean(tf.maximum(0.0, mean_gamma - 5.0))
+        range_loss = alpha_range_loss + beta_range_loss + gamma_range_loss
+        
+        # c) 门控参数平滑性正则化
+        alpha_smooth = tf.reduce_mean(tf.square(alpha_seq[:, 1:, :] - alpha_seq[:, :-1, :]))
+        beta_smooth = tf.reduce_mean(tf.square(beta_seq[:, 1:, :] - beta_seq[:, :-1, :]))
+        gamma_smooth = tf.reduce_mean(tf.square(gamma_seq[:, 1:, :] - gamma_seq[:, :-1, :]))
+        smooth_loss = (alpha_smooth + beta_smooth + gamma_smooth) / 3.0
         
         # 安全除法，避免除零
         state_dim_safe = tf.maximum(tf.cast(self.state_dim, tf.float32), 1e-7)
-        reg_loss = (reg_alpha_beta + reg_alpha_gamma) / state_dim_safe
+        gate_diversity_loss = gate_diversity_loss / state_dim_safe
+        range_loss = range_loss / state_dim_safe
+        smooth_loss = smooth_loss / state_dim_safe
         
         # 确保正则化损失数值稳定
-        reg_loss = tf.where(tf.math.is_finite(reg_loss), reg_loss, tf.constant(0.0, dtype=tf.float32))
+        gate_diversity_loss = tf.where(tf.math.is_finite(gate_diversity_loss), gate_diversity_loss, tf.constant(0.0, dtype=tf.float32))
+        range_loss = tf.where(tf.math.is_finite(range_loss), range_loss, tf.constant(0.0, dtype=tf.float32))
+        smooth_loss = tf.where(tf.math.is_finite(smooth_loss), smooth_loss, tf.constant(0.0, dtype=tf.float32))
         
-        # 5. 计算动态正则化权重，添加数值限制
+        # 5. 改进的动态正则化权重 - 更平缓的衰减
         epoch_float = tf.cast(self.epoch, tf.float32)
         # 限制epoch值，避免数值溢出
         epoch_float = tf.clip_by_value(epoch_float, 0.0, 1e6)
-        omega = tf.maximum(1e-6, 1e-3 - 9.99e-7 * epoch_float)
-        omega = tf.clip_by_value(omega, 1e-8, 1e-1)  # 额外保护
+        
+        # 改进的权重计算：使用分段函数，前期权重较高，后期逐渐衰减但不会过快归零
+        if epoch_float < 100:
+            # 前100个epoch保持较高的正则化权重
+            omega_diversity = 1e-2
+            omega_range = 5e-3
+            omega_smooth = 1e-3
+        elif epoch_float < 500:
+            # 100-500 epoch 逐渐降低
+            progress = (epoch_float - 100) / 400
+            omega_diversity = 1e-2 * (1 - 0.7 * progress)  # 从1e-2衰减到3e-3
+            omega_range = 5e-3 * (1 - 0.6 * progress)      # 从5e-3衰减到2e-3
+            omega_smooth = 1e-3 * (1 - 0.5 * progress)     # 从1e-3衰减到5e-4
+        else:
+            # 500+ epoch 保持最小正则化权重，避免完全归零
+            omega_diversity = 3e-3
+            omega_range = 2e-3
+            omega_smooth = 5e-4
+        
+        # 额外保护
+        omega_diversity = tf.clip_by_value(omega_diversity, 1e-6, 1e-1)
+        omega_range = tf.clip_by_value(omega_range, 1e-6, 1e-1)
+        omega_smooth = tf.clip_by_value(omega_smooth, 1e-6, 1e-1)
         
         # 6. 计算总损失，添加最终数值检查
-        total_loss = mse_loss + omega * reg_loss
+        total_reg_loss = (omega_diversity * gate_diversity_loss + 
+                         omega_range * range_loss + 
+                         omega_smooth * smooth_loss)
+        
+        total_loss = mse_loss + total_reg_loss
         total_loss = tf.where(tf.math.is_finite(total_loss), total_loss, mse_loss)
         
         # 确保损失值在合理范围内

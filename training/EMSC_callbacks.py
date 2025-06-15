@@ -355,7 +355,7 @@ class LearningRateScheduler(tf.keras.callbacks.Callback):
             new_lr = self.min_learning_rate + 0.5 * (self.initial_learning_rate - self.min_learning_rate) * \
                     (1 + np.cos(np.pi * progress))
         elif self.decay_type == 'validation':
-            # 基于验证损失的动态调整
+            # 基于验证损失的动态调整 - 更激进的策略
             current_val_loss = logs.get('val_loss')
             if current_val_loss is None:
                 print("Warning: val_loss not found in logs, skipping learning rate adjustment")
@@ -364,11 +364,31 @@ class LearningRateScheduler(tf.keras.callbacks.Callback):
             if current_val_loss < self.best_val_loss:
                 self.best_val_loss = current_val_loss
                 self.wait = 0
+                # 如果有改善，可以小幅提升学习率（但不超过初始值）
+                if self.current_lr < self.initial_learning_rate * 0.8:
+                    boost_factor = 1.1  # 小幅提升
+                    new_lr = min(self.current_lr * boost_factor, self.initial_learning_rate * 0.8)
             else:
                 self.wait += 1
                 if self.wait >= self.patience:
-                    new_lr = max(self.current_lr * self.factor, self.min_learning_rate)
+                    # 更激进的学习率衰减策略
+                    if epoch < 50:
+                        # 前50个epoch使用较温和的衰减
+                        decay_factor = 0.7
+                    elif epoch < 200:
+                        # 50-200 epoch使用标准衰减
+                        decay_factor = self.factor
+                    else:
+                        # 200+ epoch使用更激进的衰减
+                        decay_factor = 0.3
+                    
+                    new_lr = max(self.current_lr * decay_factor, self.min_learning_rate)
                     self.wait = 0
+                    
+                    # 如果学习率已经很小，尝试重启学习率
+                    if new_lr <= self.min_learning_rate * 2 and epoch > 100:
+                        print(f"Learning rate too small, attempting restart...")
+                        new_lr = max(self.initial_learning_rate * 0.1, self.min_learning_rate * 10)
         else:
             raise ValueError(f"Unsupported decay type: {self.decay_type}")
         

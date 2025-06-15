@@ -82,10 +82,30 @@ def parse_training_args():
                        help='运行CPU性能诊断测试')
     parser.add_argument('--cloud_io_optimize', action='store_true', default=False,
                        help='启用阿里云I/O优化（解决CPU使用率低问题）')
-    parser.add_argument('--device', type=str, default='auto', choices=['auto', 'gpu', 'cpu'],
-                       help='指定使用的设备类型: auto(自动选择，GPU优先), gpu(强制GPU), cpu(强制CPU) (默认: auto)')
+    parser.add_argument('--device', type=str, default='auto', 
+                       choices=['auto', 'gpu', 'cpu'],
+                       help='设备偏好: auto(自动), gpu(强制GPU), cpu(强制CPU) (默认: auto)')
     
-    return parser.parse_args()
+    # 自适应训练相关参数
+    parser.add_argument('--adaptive_training', action='store_true', default=False,
+                       help='启用自适应训练模式，专门解决损失停滞问题')
+    parser.add_argument('--cyclical_lr', action='store_true', default=False,
+                       help='使用循环学习率调度')
+    parser.add_argument('--warm_restart', action='store_true', default=False,
+                       help='启用热重启机制')
+    parser.add_argument('--noise_injection', action='store_true', default=False,
+                       help='启用权重噪声注入防止局部最优')
+    parser.add_argument('--gradient_scaling', action='store_true', default=False,
+                       help='启用动态梯度缩放')
+    parser.add_argument('--loss_analysis', action='store_true', default=False,
+                       help='启用详细的损失分析和诊断')
+    parser.add_argument('--restart_threshold', type=float, default=0.006,
+                       help='损失停滞阈值，低于此值触发自动重启策略 (默认: 0.006)')
+    parser.add_argument('--max_restarts', type=int, default=3,
+                       help='最大重启次数 (默认: 3)')
+    
+    args = parser.parse_args()
+    return args
 
 def get_dataset_paths(dataset_name='dataset'):
     """获取数据集路径"""
